@@ -9,7 +9,7 @@ Orchestrates the two-stage process:
 import sys
 from pathlib import Path
 
-# Ensure yolov5 is on sys.path so "from utils import ..." resolves to yolov5/utils
+# Ensure yolov5 is on sys.path
 YOLO_ROOT = Path(__file__).parent / "yolov5"
 sys.path.insert(0, str(YOLO_ROOT))
 
@@ -446,12 +446,12 @@ def parse_args():
     parser.add_argument("--save-viz", action="store_true",
                        help="Save detection visualizations")
     
-    # Hardware
-    parser.add_argument("--device", type=str, default="",
-                       help="CUDA device (0, 0,1,2,3 or cpu)")
-    parser.add_argument("--half", action="store_true",
-                       help="Use FP16 half-precision inference")
-    
+    # # Hardware
+    # parser.add_argument("--device", type=str, default="",
+    #                    help="CUDA device (0, 0,1,2,3 or cpu)")
+    # parser.add_argument("--half", action="store_true",
+    #                    help="Use FP16 half-precision inference")
+    #
     return parser.parse_args()
 
 
