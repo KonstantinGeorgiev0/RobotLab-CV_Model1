@@ -86,74 +86,74 @@ def save_enhanced_turbidity_plot(path, v_norm, excluded_info=None, out_dir=None)
 
     return str(out_path)
 
-#
-# def create_detection_visualization(crop_path: Path,
-#                                   label_path: Path,
-#                                   output_path: Path,
-#                                   conf_threshold: float = 0.2) -> Path:
-#     """
-#     Create visualization with detection bounding boxes.
-#
-#     Args:
-#         crop_path: Path to crop image
-#         label_path: Path to label file
-#         output_path: Path to save visualization
-#         conf_threshold: Minimum confidence to show
-#
-#     Returns:
-#         Path to saved visualization
-#     """
-#     img = cv2.imread(str(crop_path))
-#     if img is None:
-#         return None
-#
-#     H, W = img.shape[:2]
-#     output_path.parent.mkdir(parents=True, exist_ok=True)
-#
-#     # Class names mapping
-#     class_names = {
-#         CLASS_IDS['GEL']: "gel",
-#         CLASS_IDS['STABLE']: "stable",
-#         CLASS_IDS['AIR']: "air",
-#         CLASS_IDS['CAP']: "cap"
-#     }
-#
-#     # Initialize annotator
-#     annotator = Annotator(
-#         img,
-#         line_width=VISUALIZATION_PARAMS['line_thickness']
-#     )
-#
-#     # Parse and draw detections
-#     if label_path.exists():
-#         with open(label_path) as f:
-#             for line in f:
-#                 parsed = yolo_line_to_xyxy(line.strip(), W, H)
-#                 if not parsed:
-#                     continue
-#
-#                 cls_id, box, conf = parsed
-#
-#                 if conf < conf_threshold:
-#                     continue
-#
-#                 # Prepare label
-#                 label = f"{class_names.get(cls_id, 'unknown')} {conf:.2f}"
-#
-#                 # Draw box
-#                 x1, y1, x2, y2 = map(int, box)
-#                 annotator.box_label(
-#                     [x1, y1, x2, y2],
-#                     label,
-#                     color=colors(cls_id, True)
-#                 )
-#
-#     # Save result
-#     result = annotator.result()
-#     cv2.imwrite(str(output_path), result)
-#
-#     return output_path
-#
+
+def create_detection_visualization(crop_path: Path,
+                                  label_path: Path,
+                                  output_path: Path,
+                                  conf_threshold: float = 0.2) -> Path:
+    """
+    Create visualization with detection bounding boxes.
+
+    Args:
+        crop_path: Path to crop image
+        label_path: Path to label file
+        output_path: Path to save visualization
+        conf_threshold: Minimum confidence to show
+
+    Returns:
+        Path to saved visualization
+    """
+    img = cv2.imread(str(crop_path))
+    if img is None:
+        return None
+
+    H, W = img.shape[:2]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Class names mapping
+    class_names = {
+        CLASS_IDS['GEL']: "gel",
+        CLASS_IDS['STABLE']: "stable",
+        CLASS_IDS['AIR']: "air",
+        CLASS_IDS['CAP']: "cap"
+    }
+
+    # Initialize annotator
+    annotator = Annotator(
+        img,
+        line_width=VISUALIZATION_PARAMS['line_thickness']
+    )
+
+    # Parse and draw detections
+    if label_path.exists():
+        with open(label_path) as f:
+            for line in f:
+                parsed = yolo_line_to_xyxy(line.strip(), W, H)
+                if not parsed:
+                    continue
+
+                cls_id, box, conf = parsed
+
+                if conf < conf_threshold:
+                    continue
+
+                # Prepare label
+                label = f"{class_names.get(cls_id, 'unknown')} {conf:.2f}"
+
+                # Draw box
+                x1, y1, x2, y2 = map(int, box)
+                annotator.box_label(
+                    [x1, y1, x2, y2],
+                    label,
+                    color=colors(cls_id, True)
+                )
+
+    # Save result
+    result = annotator.result()
+    cv2.imwrite(str(output_path), result)
+
+    return output_path
+
 
 def create_summary_plot(manifest_path: Path, 
                        output_dir: Path) -> Path:

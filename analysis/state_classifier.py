@@ -11,7 +11,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from config import CLASS_IDS, LIQUID_CLASSES, DETECTION_THRESHOLDS, PHASE_SEPARATION_THRESHOLDS
 from robotlab_utils.bbox_utils import (
     yolo_line_to_xyxy, box_area, merge_detections_by_iou,
-    filter_detections_by_region
+    filter_detections_by_region, merge_detections_by_iou_with_priority
 )
 from analysis.turbidity_analysis import compute_turbidity_profile, detect_turbidity_peaks
 
@@ -64,8 +64,8 @@ class VialStateClassifier:
         # Merge overlapping boxes if enabled
         if self.merge_boxes:
             detections = merge_detections_by_iou(
-                detections, 
-                DETECTION_THRESHOLDS['iou_merge']
+                detections,
+                iou_thr=DETECTION_THRESHOLDS['iou_thr']
             )
         
         # Separate liquid and non-liquid detections

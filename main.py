@@ -37,7 +37,7 @@ from yolov5.utils.torch_utils import select_device
 from config import DEFAULT_PATHS
 from analysis.state_classifier import VialStateClassifier
 from analysis.turbidity_analysis import compute_turbidity_profile, analyze_region_turbidity
-from visualization.turbidity_viz import save_enhanced_turbidity_plot
+from visualization.turbidity_viz import save_enhanced_turbidity_plot, create_detection_visualization
 from robotlab_utils.image_utils import resize_keep_height
 from robotlab_utils.bbox_utils import expand_and_clamp
 
@@ -321,13 +321,13 @@ class VialDetectionPipeline:
                     }
                 
                 # Create visualization if requested
-                # if self.args.save_viz and label_path.exists():
-                #     viz_path = create_detection_visualization(
-                #         crop_path,
-                #         label_path,
-                #         viz_dir / f"{crop_path.stem}_viz.jpg"
-                #     )
-                #     state_info["visualization"] = str(viz_path)
+                if self.args.save_viz and label_path.exists():
+                    viz_path = create_detection_visualization(
+                        crop_path,
+                        label_path,
+                        viz_dir / f"{crop_path.stem}_viz.jpg"
+                    )
+                    state_info["visualization"] = str(viz_path)
                 
                 # Combine all information
                 record.update(state_info)
@@ -417,7 +417,7 @@ def parse_args():
                        help="Vial detection confidence threshold")
     parser.add_argument("--vial-iou", type=float, default=0.45,
                        help="Vial detection IoU threshold")
-    parser.add_argument("--pad", type=float, default=0.12,
+    parser.add_argument("--pad", type=float, default=0.05,
                        help="Padding fraction for vial crops")
     parser.add_argument("--crop-h", type=int, default=640,
                        help="Target height for vial crops")
@@ -446,12 +446,12 @@ def parse_args():
     parser.add_argument("--save-viz", action="store_true",
                        help="Save detection visualizations")
     
-    # # Hardware
-    # parser.add_argument("--device", type=str, default="",
-    #                    help="CUDA device (0, 0,1,2,3 or cpu)")
-    # parser.add_argument("--half", action="store_true",
-    #                    help="Use FP16 half-precision inference")
-    #
+    # Hardware
+    parser.add_argument("--device", type=str, default="",
+                       help="CUDA device (0, 0,1,2,3 or cpu)")
+    parser.add_argument("--half", action="store_true",
+                       help="Use FP16 half-precision inference")
+
     return parser.parse_args()
 
 

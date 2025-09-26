@@ -18,8 +18,8 @@ LIQUID_CLASSES = {CLASS_IDS['STABLE'], CLASS_IDS['GEL']}
 
 # Detection thresholds
 DETECTION_THRESHOLDS = {
-    'conf_min': 0.20,              # Minimum confidence for detections
-    'iou_merge': 0.50,              # IoU threshold for merging boxes
+    'conf_min': 0.20,               # Minimum confidence for detections
+    'iou_thr': 0.50,                # IoU threshold for merging boxes
     'gel_area_frac': 0.35,          # Gel area fraction threshold
     'gel_dominance_count': 1,       # Gel box count dominance threshold
 }
