@@ -10,16 +10,19 @@ from typing import Dict, List, Any, Optional, Tuple
 
 from config import CLASS_IDS, LIQUID_CLASSES, DETECTION_THRESHOLDS, PHASE_SEPARATION_THRESHOLDS
 from robotlab_utils.bbox_utils import (
-    yolo_line_to_xyxy, box_area, merge_detections_by_iou,
-    filter_detections_by_region, merge_detections_by_iou_with_priority
+    yolo_line_to_xyxy, box_area, merge_detections_by_iou, filter_detections_by_exclusion_region,
 )
 from analysis.turbidity_analysis import compute_turbidity_profile, detect_turbidity_peaks
+# from yolov5.utils.general import LOGGER
 
 
 class VialStateClassifier:
     """Classifier for determining vial state from detections."""
     
-    def __init__(self, use_turbidity: bool = False, merge_boxes: bool = True):
+    def __init__(
+            self, use_turbidity: bool = False, merge_boxes: bool = True,
+            region_exclusion: Optional[Dict[str, float]] = None
+    ):
         """
         Initialize classifier.
         
@@ -29,6 +32,7 @@ class VialStateClassifier:
         """
         self.use_turbidity = use_turbidity
         self.merge_boxes = merge_boxes
+        self.region_exclusion = region_exclusion or {}
     
     def classify(self, crop_path: Path, label_path: Path) -> Dict[str, Any]:
         """
@@ -98,27 +102,27 @@ class VialStateClassifier:
             "detections": self._summarize_detections(liquid_dets),
             "coverage": self._calculate_coverage(liquid_dets, H, W)
         }
-    
+
     def _parse_detections(self, label_path: Path, W: int, H: int) -> List[Dict[str, Any]]:
         """Parse YOLO label file into detection dictionaries."""
         detections = []
-        
+
         with open(label_path) as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
-                
+
                 parsed = yolo_line_to_xyxy(line, W, H)
                 if not parsed:
                     continue
-                
+
                 cls_id, box, conf = parsed
-                
+
                 # Filter by minimum confidence
                 if conf < DETECTION_THRESHOLDS['conf_min']:
                     continue
-                
+
                 det = {
                     'class_id': cls_id,
                     'box': box,
@@ -127,9 +131,48 @@ class VialStateClassifier:
                     'area': box_area(box)
                 }
                 detections.append(det)
-        
+
+        # Apply region exclusion
+        if detections and self.region_exclusion:
+            top_frac = self.region_exclusion.get('top_fraction', 0.0)
+            bottom_frac = self.region_exclusion.get('bottom_fraction', 0.0)
+
+            if top_frac > 0 or bottom_frac > 0:
+                detections, excluded = filter_detections_by_exclusion_region(
+                    detections,
+                    H,
+                    top_frac,
+                    bottom_frac,
+                    return_excluded=True
+                )
+
+                # Log excluded detections
+                if excluded:
+                    from yolov5.utils.general import LOGGER
+                    LOGGER.info(f"Excluded {len(excluded)} detections from top/bottom regions")
+
+        # # Deduplicate overlapping detections
+        # if detections and self.merge_boxes:
+        #     # Define priority: AIR > GEL > STABLE
+        #     priority_classes = [
+        #         CLASS_IDS.get('AIR'),
+        #         CLASS_IDS.get('GEL'),
+        #         CLASS_IDS.get('STABLE'),
+        #     ]
+        #     priority_classes = [c for c in priority_classes if c is not None]
+        #
+        #     detections, removed = deduplicate_overlapping_detections(
+        #         detections,
+        #         iou_threshold=DETECTION_THRESHOLDS.get('iou_thr', 0.85),
+        #         priority_classes=priority_classes
+        #     )
+        #
+        #     # Log removed detections for debugging
+        #     if removed and hasattr(self, 'debug_mode') and self.debug_mode:
+        #         LOGGER.info(f"Removed {len(removed)} overlapping detections")
+
         return detections
-    
+
     def _is_liquid(self, class_id: int) -> bool:
         """Check if class ID corresponds to liquid."""
         return class_id in LIQUID_CLASSES

@@ -49,6 +49,13 @@ class VialDetectionPipeline:
         """Initialize pipeline with command-line arguments."""
         self.args = args
         self.device = select_device(args.device)
+
+        # # Add region exclusion config
+        # region_exclusion = None if args.no_region_exclusion else {
+        #     'top_fraction': args.exclude_top,
+        #     'bottom_fraction': args.exclude_bottom
+        # }
+
         self.classifier = VialStateClassifier(
             use_turbidity=args.use_turbidity,
             merge_boxes=args.merge_boxes
@@ -436,6 +443,12 @@ def parse_args():
                        help="Liquid detection confidence threshold")
     parser.add_argument("--liquid-iou", type=float, default=0.50,
                        help="Liquid detection IoU threshold")
+    parser.add_argument("--exclude-top", type=float, default=0.20,
+                        help="Exclude top fraction of image (0.0-1.0)")
+    parser.add_argument("--exclude-bottom", type=float, default=0.10,
+                        help="Exclude bottom fraction of image (0.0-1.0)")
+    parser.add_argument("--no-region-exclusion", action="store_true",
+                        help="Disable region exclusion")
     
     # Analysis options
     parser.add_argument("--use-turbidity", action="store_true",

@@ -5,7 +5,7 @@ Provides helpers for converting formats, expanding/clamping,
 computing box metrics, and filtering detections.
 """
 
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional, Any, Union
 
 
 def expand_and_clamp(
@@ -73,26 +73,56 @@ def box_area(bbox: List[float]) -> float:
     return max(0.0, x2 - x1) * max(0.0, y2 - y1)
 
 
-def iou_xyxy(a: List[float], b: List[float]) -> float:
+# def iou_xyxy(a: List[float], b: List[float]) -> float:
+#     """
+#     Calculate Intersection over Union (IoU) between two bounding boxes.
+#
+#     Args:
+#         a, b: [x1, y1, x2, y2]
+#
+#     Returns:
+#         IoU value between 0 and 1
+#     """
+#     ax1, ay1, ax2, ay2 = a
+#     bx1, by1, bx2, by2 = b
+#
+#     ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+#     ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+#     iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+#     inter = iw * ih
+#     ua = max(0, ax2-ax1) * max(0, ay2-ay1) + max(0, bx2-bx1) * max(0, by2-by1) - inter
+#     # print("\niou_xyxy: ", ua, "\n")
+#     return inter / (ua + 1e-9)
+
+
+def compute_iou(box1: List[float], box2: List[float]) -> float:
     """
-    Calculate Intersection over Union (IoU) between two bounding boxes.
+    Compute Intersection over Union (IoU) of two boxes.
 
     Args:
-        a, b: [x1, y1, x2, y2]
+        box1: [x1, y1, x2, y2]
+        box2: [x1, y1, x2, y2]
 
     Returns:
-        IoU value between 0 and 1
+        IoU value
     """
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
+    x1_inter = max(box1[0], box2[0])
+    y1_inter = max(box1[1], box2[1])
+    x2_inter = min(box1[2], box2[2])
+    y2_inter = min(box1[3], box2[3])
 
-    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
-    inter = iw * ih
-    ua = max(0, ax2-ax1) * max(0, ay2-ay1) + max(0, bx2-bx1) * max(0, by2-by1) - inter
+    if x2_inter < x1_inter or y2_inter < y1_inter:
+        return 0.0
 
-    return inter / (ua + 1e-9)
+    inter_area = (x2_inter - x1_inter) * (y2_inter - y1_inter)
+
+    box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+
+    union_area = box1_area + box2_area - inter_area
+    print("\ncompute iou: ", inter_area / union_area, "\n")
+
+    return inter_area / union_area if union_area > 0 else 0.0
 
 
 def merge_detections_by_iou(
@@ -121,7 +151,7 @@ def merge_detections_by_iou(
     for d in dets:
         # Check if this box overlaps with any already kept box
         overlaps_with_kept = any(
-            iou_xyxy(d['box'], k['box']) > iou_thr
+            compute_iou(d['box'], k['box']) > iou_thr
             for k in kept
         )
 
@@ -131,94 +161,244 @@ def merge_detections_by_iou(
 
     return kept
 
-# --- cross-class conflict resolution ---
-def _suppress_conflicting_detections(dets, iou_thr=0.8):
-    if not dets:
-        return dets
-    dets = sorted(dets, key=lambda d: d['confidence'], reverse=True)
-    kept = []
-    for d in dets:
-        bb = d['box']
-        conflict = False
-        for k in kept:
-            if d['class_id'] != k['class_id'] and iou_xyxy(bb, k['box']) > iou_thr:
-                conflict = True
-                break
-        if not conflict:
-            kept.append(d)
-    return kept
 
-# --- same-class greedy NMS ---
-def _merge_same_class_by_iou(dets, iou_thr=0.5):
-    if not dets:
-        return dets
-    dets = sorted(dets, key=lambda d: d['confidence'], reverse=True)
-    kept = []
-    for d in dets:
-        bb = d['box']; cls = d['class_id']
-        if all((k['class_id'] != cls) or (iou_xyxy(bb, k['box']) <= iou_thr) for k in kept):
-            kept.append(d)
-    return kept
-
-def merge_detections_by_iou_with_priority(
-    dets,
-    iou_thr=0.5,
-    *,
-    image_height=None,
-    air_class_id=2,
-    top_region_fraction=0.20,
-    conflict_iou=0.8
-):
+def is_detection_in_excluded_region(
+        detection: Dict[str, Any],
+        image_height: int,
+        top_fraction: float = 0.0,
+        bottom_fraction: float = 0.0
+    ) -> bool:
     """
-    Single-call cleanup:
-      (0) prioritize AIR in the top region (domain rule),
-      (1) suppress cross-class conflicts (keep highest conf),
-      (2) same-class greedy NMS (keep highest conf within each class).
-    """
-    if not dets:
-        return dets
-
-    # Compute top region cutoff using the real image height, not box coords
-    if image_height is None:
-        image_height = max(int(d['box'][3]) for d in dets)  # fallback
-
-    top_y = image_height * top_region_fraction
-
-    # Split into AIR-top and the rest
-    air_top, others = [], []
-    for d in dets:
-        y1 = d['box'][1]
-        (air_top if (d['class_id'] == air_class_id and y1 < top_y) else others).append(d)
-
-    # keep AIR in top region with same-class NMS
-    air_top = _merge_same_class_by_iou(air_top, iou_thr=iou_thr)
-
-    # Combine with others and suppress cross-class conflicts globally
-    combined = air_top + others
-    combined = _suppress_conflicting_detections(combined, iou_thr=conflict_iou)
-
-    # same-class NMS on the result
-    cleaned = _merge_same_class_by_iou(combined, iou_thr=iou_thr)
-    return cleaned
-
-def filter_detections_by_region(
-    dets: List[Dict], region: Tuple[int, int, int, int]
-) -> List[Dict]:
-    """
-    Keep only detections whose centers fall inside a region.
+    Check if detection center is in excluded region.
 
     Args:
-        dets: List of detection dicts with key 'box' = [x1, y1, x2, y2]
-        region: (rx1, ry1, rx2, ry2)
+        detection: Detection dictionary with 'center_y' or 'box' key
+        image_height: Height of image in pixels
+        top_fraction: Fraction of image height to exclude from top (0.0-1.0)
+        bottom_fraction: Fraction of image height to exclude from bottom (0.0-1.0)
 
     Returns:
-        Filtered detections
+        True if detection is in excluded region, False otherwise
     """
-    rx1, ry1, rx2, ry2 = region
-    out = []
-    for d in dets:
-        x1, y1, x2, y2 = d['box']
-        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-        if rx1 <= cx <= rx2 and ry1 <= cy <= ry2:
-            out.append(d)
-    return out
+    # Get detection center Y coordinate
+    if 'center_y' in detection:
+        center_y = detection['center_y']
+    elif 'box' in detection:
+        box = detection['box']
+        center_y = (box[1] + box[3]) / 2.0
+    else:
+        return False
+
+    # Calculate exclusion boundaries
+    top_boundary = image_height * top_fraction
+    bottom_boundary = image_height * (1.0 - bottom_fraction)
+
+    # Check if center is in excluded region
+    if center_y < top_boundary or center_y > bottom_boundary:
+        return True
+
+    return False
+
+
+def filter_detections_by_exclusion_region(
+        detections: List[Dict[str, Any]],
+        image_height: int,
+        top_fraction: float = 0.0,
+        bottom_fraction: float = 0.0,
+        return_excluded: bool = False
+    ) -> Union[List[Dict[str, Any]], Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
+    """
+    Filter detections by excluding top and bottom regions.
+
+    Args:
+        detections: List of detection dictionaries
+        image_height: Height of image in pixels
+        top_fraction: Fraction to exclude from top (0.0-1.0)
+        bottom_fraction: Fraction to exclude from bottom (0.0-1.0)
+        return_excluded: If True, return both kept and excluded detections
+
+    Returns:
+        Filtered detections list, or (kept, excluded) tuple if return_excluded=True
+    """
+    if not detections or (top_fraction == 0.0 and bottom_fraction == 0.0):
+        return (detections, []) if return_excluded else detections
+
+    kept = []
+    excluded = []
+
+    for det in detections:
+        if is_detection_in_excluded_region(det, image_height, top_fraction, bottom_fraction):
+            excluded.append({
+                **det,
+                'exclusion_reason': 'region_excluded'
+            })
+        else:
+            kept.append(det)
+
+    if return_excluded:
+        return kept, excluded
+    return kept
+
+
+# --- cross-class conflict resolution ---
+# def deduplicate_overlapping_detections(
+#         detections: List[Dict[str, Any]],
+#         iou_threshold: float = 0.85,
+#         priority_classes: Optional[List[int]] = None
+# ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+#     """
+#     Remove overlapping detections, keeping the most dominant one.
+#
+#     Args:
+#         detections: List of detection dictionaries
+#         iou_threshold: IoU threshold for considering boxes as overlapping
+#         priority_classes: Optional list of class IDs in priority order (highest first)
+#
+#     Returns:
+#         Tuple of (kept_detections, removed_detections)
+#     """
+#     if not detections:
+#         return [], []
+#
+#     kept = []
+#     removed = []
+#     used_indices = set()
+#
+#     # Sort by confidence (descending)
+#     sorted_dets = sorted(enumerate(detections),
+#                          key=lambda x: x[1]['confidence'],
+#                          reverse=True)
+#
+#     for idx, det in sorted_dets:
+#         if idx in used_indices:
+#             continue
+#
+#         # Find all detections that overlap with this one
+#         overlapping = []
+#         for other_idx, other_det in sorted_dets:
+#             if other_idx == idx or other_idx in used_indices:
+#                 continue
+#
+#             iou = compute_iou(det['box'], other_det['box'])
+#             if iou >= iou_threshold:
+#                 overlapping.append((other_idx, other_det, iou))
+#
+#         if overlapping:
+#             # Add current detection to candidates
+#             candidates = [(idx, det, 1.0)] + overlapping
+#
+#             # Select best detection based on priority
+#             best_det = select_dominant_detection(
+#                 candidates,
+#                 priority_classes
+#             )
+#
+#             kept.append(best_det[1])
+#
+#             # Mark all overlapping as used
+#             used_indices.add(idx)
+#             for overlap_idx, overlap_det, _ in overlapping:
+#                 used_indices.add(overlap_idx)
+#                 removed.append({
+#                     **overlap_det,
+#                     'removed_reason': 'overlapping',
+#                     'overlaps_with': best_det[1]['class_id'],
+#                     'iou': overlap_idx
+#                 })
+#         else:
+#             kept.append(det)
+#             used_indices.add(idx)
+#
+#     return kept, removed
+#
+#
+# def select_dominant_detection(
+#         candidates: List[Tuple[int, Dict[str, Any], float]],
+#         priority_classes: Optional[List[int]] = None
+# ) -> Tuple[int, Dict[str, Any], float]:
+#     """
+#     Select the dominant detection from overlapping candidates.
+#
+#     Args:
+#         candidates: List of (index, detection, iou) tuples
+#         priority_classes: Optional class priority list
+#
+#     Returns:
+#         The dominant (index, detection, iou) tuple
+#     """
+#     if len(candidates) == 1:
+#         return candidates[0]
+#
+#     # Strategy 1: Use class priority if provided
+#     if priority_classes:
+#         for priority_class in priority_classes:
+#             for candidate in candidates:
+#                 if candidate[1]['class_id'] == priority_class:
+#                     return candidate
+#
+#     # Strategy 2: Highest confidence
+#     return max(candidates, key=lambda x: x[1]['confidence'])
+
+# def merge_detections_by_iou_with_priority(
+#     dets,
+#     iou_thr=0.5,
+#     *,
+#     image_height=None,
+#     air_class_id=2,
+#     top_region_fraction=0.20,
+#     conflict_iou=0.8
+# ):
+#     """
+#     Single-call cleanup:
+#       (0) prioritize AIR in the top region (domain rule),
+#       (1) suppress cross-class conflicts (keep highest conf),
+#       (2) same-class greedy NMS (keep highest conf within each class).
+#     """
+#     if not dets:
+#         return dets
+#
+#     # Compute top region cutoff using the real image height, not box coords
+#     if image_height is None:
+#         image_height = max(int(d['box'][3]) for d in dets)  # fallback
+#
+#     top_y = image_height * top_region_fraction
+#
+#     # Split into AIR-top and the rest
+#     air_top, others = [], []
+#     for d in dets:
+#         y1 = d['box'][1]
+#         (air_top if (d['class_id'] == air_class_id and y1 < top_y) else others).append(d)
+#
+#     # keep AIR in top region with same-class NMS
+#     air_top = _merge_same_class_by_iou(air_top, iou_thr=iou_thr)
+#
+#     # Combine with others and suppress cross-class conflicts globally
+#     combined = air_top + others
+#     combined = _suppress_conflicting_detections(combined, iou_thr=conflict_iou)
+#
+#     # same-class NMS on the result
+#     cleaned = _merge_same_class_by_iou(combined, iou_thr=iou_thr)
+#     return cleaned
+
+
+# def filter_detections_by_region(
+#     dets: List[Dict], region: Tuple[int, int, int, int]
+# ) -> List[Dict]:
+#     """
+#     Keep only detections whose centers fall inside a region.
+#
+#     Args:
+#         dets: List of detection dicts with key 'box' = [x1, y1, x2, y2]
+#         region: (rx1, ry1, rx2, ry2)
+#
+#     Returns:
+#         Filtered detections
+#     """
+#     rx1, ry1, rx2, ry2 = region
+#     out = []
+#     for d in dets:
+#         x1, y1, x2, y2 = d['box']
+#         cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+#         if rx1 <= cx <= rx2 and ry1 <= cy <= ry2:
+#             out.append(d)
+#     return out

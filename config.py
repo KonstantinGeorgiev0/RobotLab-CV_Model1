@@ -42,6 +42,13 @@ TURBIDITY_PARAMS = {
     'peak_separation_fraction': 0.1, # Minimum separation between peaks
 }
 
+# Region exclusion for liquid detection (normalized coordinates)
+REGION_EXCLUSION = {
+    'top_fraction': 0.20,      # Exclude top %
+    'bottom_fraction': 0.10,   # Exclude bottom %
+    'enabled': True            # Toggle feature on/off
+}
+
 # Visualization parameters
 VISUALIZATION_PARAMS = {
     'line_thickness': 2,
