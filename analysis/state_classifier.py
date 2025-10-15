@@ -13,7 +13,7 @@ from robotlab_utils.bbox_utils import (
     yolo_line_to_xyxy, box_area, merge_detections_by_iou, filter_detections_by_exclusion_region,
 )
 from analysis.turbidity_analysis import compute_turbidity_profile, detect_turbidity_peaks
-# from yolov5.utils.general import LOGGER
+from yolov5.utils.general import LOGGER
 
 
 class VialStateClassifier:
@@ -58,20 +58,42 @@ class VialStateClassifier:
         # Handle no detection file
         if not label_path.exists():
             return self._classify_no_detections(img)
-        
+
+        # Count detections in original label file
+        original_detection_count = 0
+        with open(label_path) as f:
+            for line in f:
+                if line.strip():
+                    original_detection_count += 1
+
         # Parse detections
         detections = self._parse_detections(label_path, W, H)
-        
+
+        # Create region info for output
+        region_info = {
+            "enabled": bool(self.region_exclusion),
+            "original_detections": original_detection_count,
+            "after_exclusion": len(detections),
+            "excluded_count": original_detection_count - len(detections)
+        }
+
+        if self.region_exclusion:
+            top_frac = self.region_exclusion.get('top_fraction', 0.0)
+            bottom_frac = self.region_exclusion.get('bottom_fraction', 0.0)
+            region_info.update({
+                "top_fraction": top_frac,
+                "bottom_fraction": bottom_frac,
+                "top_boundary_px": int(H * top_frac),
+                "bottom_boundary_px": int(H * (1.0 - bottom_frac)),
+                "valid_region_height_px": int(H * (1.0 - top_frac - bottom_frac))
+            })
+
         if not detections:
-            return self._classify_no_detections(img)
-        
-        # Merge overlapping boxes if enabled
-        if self.merge_boxes:
-            detections = merge_detections_by_iou(
-                detections,
-                iou_thr=DETECTION_THRESHOLDS['iou_thr']
-            )
-        
+            return {
+                **self._classify_no_detections(img),
+                "region_exclusion": region_info
+            }
+
         # Separate liquid and non-liquid detections
         liquid_dets = [d for d in detections if self._is_liquid(d['class_id'])]
         
@@ -79,7 +101,8 @@ class VialStateClassifier:
             return {
                 "vial_state": "only_air",
                 "reason": "no_liquid_detected",
-                "total_detections": len(detections)
+                "total_detections": len(detections),
+                "region_exclusion": region_info
             }
         
         # Check for phase separation
@@ -91,7 +114,8 @@ class VialStateClassifier:
             return {
                 "vial_state": "phase_separated",
                 "phase_metrics": phase_metrics,
-                "detections": self._summarize_detections(liquid_dets)
+                "detections": self._summarize_detections(liquid_dets),
+                "region_exclusion": region_info
             }
         
         # Classify as gelled or stable
@@ -100,7 +124,8 @@ class VialStateClassifier:
         return {
             "vial_state": state,
             "detections": self._summarize_detections(liquid_dets),
-            "coverage": self._calculate_coverage(liquid_dets, H, W)
+            "coverage": self._calculate_coverage(liquid_dets, H, W),
+            "region_exclusion": region_info
         }
 
     def _parse_detections(self, label_path: Path, W: int, H: int) -> List[Dict[str, Any]]:
@@ -132,6 +157,9 @@ class VialStateClassifier:
                 }
                 detections.append(det)
 
+        original_count = len(detections)
+        print("\nOriginal detections count: ", original_count, "\n")
+
         # Apply region exclusion
         if detections and self.region_exclusion:
             top_frac = self.region_exclusion.get('top_fraction', 0.0)
@@ -148,8 +176,13 @@ class VialStateClassifier:
 
                 # Log excluded detections
                 if excluded:
-                    from yolov5.utils.general import LOGGER
-                    LOGGER.info(f"Excluded {len(excluded)} detections from top/bottom regions")
+                    LOGGER.info(
+                        f"[{label_path.stem}] Excluded {len(excluded)}/{original_count} detections from regions")
+                    LOGGER.info(
+                        f"  Image height: {H}px, Top boundary: {int(H * top_frac)}px, Bottom boundary: {int(H * (1 - bottom_frac))}px")
+                    for ex in excluded:
+                        LOGGER.info(
+                            f"    - Class {ex['class_id']} at y={ex['center_y']:.1f}px (conf={ex['confidence']:.3f})")
 
         # # Deduplicate overlapping detections
         # if detections and self.merge_boxes:

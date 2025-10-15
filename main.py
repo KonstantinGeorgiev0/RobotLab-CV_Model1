@@ -9,6 +9,8 @@ Orchestrates the two-stage process:
 import sys
 from pathlib import Path
 
+from visualization.detection_visualization import create_filtered_detection_visualization
+
 # Ensure yolov5 is on sys.path
 YOLO_ROOT = Path(__file__).parent / "yolov5"
 sys.path.insert(0, str(YOLO_ROOT))
@@ -44,26 +46,34 @@ from robotlab_utils.bbox_utils import expand_and_clamp
 
 class VialDetectionPipeline:
     """Main pipeline for vial detection and analysis."""
-    
+
     def __init__(self, args):
         """Initialize pipeline with command-line arguments."""
         self.args = args
         self.device = select_device(args.device)
 
-        # # Add region exclusion config
-        # region_exclusion = None if args.no_region_exclusion else {
-        #     'top_fraction': args.exclude_top,
-        #     'bottom_fraction': args.exclude_bottom
-        # }
+        # Configure region exclusion
+        if hasattr(args, 'no_region_exclusion') and args.no_region_exclusion:
+            region_exclusion = None
+        else:
+            region_exclusion = {
+                'top_fraction': getattr(args, 'exclude_top', 0.0),
+                'bottom_fraction': getattr(args, 'exclude_bottom', 0.0)
+            }
 
+        # Initialize classifier
         self.classifier = VialStateClassifier(
             use_turbidity=args.use_turbidity,
-            merge_boxes=args.merge_boxes
+            merge_boxes=args.merge_boxes,
+            region_exclusion=region_exclusion
         )
-        
+
         # Setup output directories
         self.out_root = Path(args.outdir)
         self.out_root.mkdir(parents=True, exist_ok=True)
+
+        # Debug
+        # LOGGER.info(f"Region exclusion config: {region_exclusion}")
         
     def run(self) -> Dict[str, Any]:
         """
@@ -267,17 +277,22 @@ class VialDetectionPipeline:
             Path to manifest file
         """
         LOGGER.info("[Stage C] Processing results and creating manifest")
-        
+
         # Setup directories
         manifest_dir = liquid_out_dir / "manifest"
         manifest_dir.mkdir(parents=True, exist_ok=True)
-        
+
         turbidity_dir = liquid_out_dir / "turbidity"
         turbidity_dir.mkdir(parents=True, exist_ok=True)
-        
-        viz_dir = liquid_out_dir / "visualizations"
-        viz_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # viz_dir = liquid_out_dir / "visualizations"
+        # viz_dir.mkdir(parents=True, exist_ok=True)
+
+        # Separate directory for filtered visualizations
+        filtered_viz_dir = liquid_out_dir / "visualizations_filtered"
+        if self.args.save_viz and not self.args.no_region_exclusion:
+            filtered_viz_dir.mkdir(parents=True, exist_ok=True)
+
         labels_dir = liquid_out_dir / "labels"
         
         # Process each crop
@@ -330,12 +345,24 @@ class VialDetectionPipeline:
                 
                 # Create visualization if requested
                 if self.args.save_viz and label_path.exists():
-                    viz_path = create_detection_visualization(
-                        crop_path,
-                        label_path,
-                        viz_dir / f"{crop_path.stem}_viz.jpg"
-                    )
-                    state_info["visualization"] = str(viz_path)
+                    # viz_path = create_detection_visualization(
+                    #     crop_path,
+                    #     label_path,
+                    #     # viz_dir / f"{crop_path.stem}_viz.jpg"
+                    # )
+                    # state_info["visualization"] = str(viz_path)
+
+                    # Filtered visualization (excluded regions)
+                    if not self.args.no_region_exclusion:
+                        filtered_viz_path = create_filtered_detection_visualization(
+                            crop_path,
+                            label_path,
+                            filtered_viz_dir / f"{crop_path.stem}_filtered.jpg",
+                            self.args.exclude_top,
+                            self.args.exclude_bottom,
+                            show_excluded_regions=True
+                        )
+                        state_info["visualization_filtered"] = str(filtered_viz_path)
                 
                 # Combine all information
                 record.update(state_info)
