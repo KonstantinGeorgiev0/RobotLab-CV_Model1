@@ -214,6 +214,7 @@ class VialDetectionPipeline:
                 "--imgsz", str(self.args.liquid_imgsz),
                 "--conf", str(self.args.liquid_conf),
                 "--iou", str(self.args.liquid_iou),
+                "--agnostic-nms",
                 "--save-txt", "--save-conf",
                 "--project", str(out_dir),
                 "--name", exp_name,
