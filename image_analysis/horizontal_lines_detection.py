@@ -44,7 +44,7 @@ class HorizontalLineDetector:
                  horiz_kernel_div: int = 15,
                  vert_kernel_div: int = 30,
                  adaptive_block: int = 15,
-                 adaptive_c: int = -2,
+                 adaptive_c: int = 2,
                  min_line_length: float = 0.3,
                  min_line_strength: float = 0.1,
                  merge_threshold: float = 0.02):
@@ -115,36 +115,109 @@ class HorizontalLineDetector:
         }
 
     def _extract_horizontal_lines(self, img: np.ndarray) -> np.ndarray:
-        """Extract horizontal lines using morphological operations."""
+        """Extract horizontal lines using gradient analysis."""
         # Convert to grayscale
         if img.ndim == 3:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         else:
             gray = img.copy()
-
-        # Invert and apply adaptive threshold
-        inv = cv2.bitwise_not(gray)
-        bw = cv2.adaptiveThreshold(
-            inv, 255,
-            cv2.ADAPTIVE_THRESH_MEAN_C,
-            cv2.THRESH_BINARY,
-            self.adaptive_block,
-            self.adaptive_c
-        )
-
-        # Create horizontal kernel
-        cols = bw.shape[1]
-        horizontal_size = max(3, cols // self.horiz_kernel_div)
+        
+        # Apply Gaussian blur
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+        # Compute vertical gradient (horizontal edges)
+        sobelY = cv2.Sobel(blurred, cv2.CV_64F, 0, 1, ksize=3)
+        sobelY = np.abs(sobelY)
+        
+        # Normalize to 0-255
+        sobelY = np.uint8(255 * sobelY / np.max(sobelY))
+        
+        # Threshold to get strong horizontal edges
+        _, horizontal = cv2.threshold(sobelY, 30, 255, cv2.THRESH_BINARY)
+        
+        # Enhance horizontal structures
+        cols = horizontal.shape[1]
+        horizontal_size = max(3, cols // 10)  # Smaller divisor for larger kernel
         horizontal_kernel = cv2.getStructuringElement(
             cv2.MORPH_RECT,
             (horizontal_size, 1)
         )
-
-        # Apply morphological operations
-        horizontal = cv2.erode(bw, horizontal_kernel)
-        horizontal = cv2.dilate(horizontal, horizontal_kernel)
-
+        
+        # Dilate to connect horizontal edges
+        horizontal = cv2.dilate(horizontal, horizontal_kernel, iterations=2)
+        
+        # Debug
+        cv2.imwrite('debug_gradient.png', sobelY)
+        cv2.imwrite('debug_horizontal.png', horizontal)
+        
         return horizontal
+
+    # def _extract_horizontal_lines(self, img: np.ndarray) -> np.ndarray:
+    #     """Extract horizontal lines using edge detection."""
+    #     # Convert to grayscale
+    #     if img.ndim == 3:
+    #         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    #     else:
+    #         gray = img.copy()
+        
+    #     # Apply Gaussian blur to reduce noise
+    #     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        
+    #     # Detect edges using Canny
+    #     edges = cv2.Canny(blurred, 50, 150)
+        
+    #     # Create horizontal kernel to enhance horizontal edges
+    #     cols = edges.shape[1]
+    #     horizontal_size = max(3, cols // self.horiz_kernel_div)
+    #     horizontal_kernel = cv2.getStructuringElement(
+    #         cv2.MORPH_RECT,
+    #         (horizontal_size, 1)
+    #     )
+        
+    #     # Dilate to connect nearby horizontal edges
+    #     horizontal = cv2.dilate(edges, horizontal_kernel, iterations=1)
+        
+    #     # Optional: Close small gaps
+    #     horizontal = cv2.morphologyEx(horizontal, cv2.MORPH_CLOSE, horizontal_kernel)
+        
+    #     # Debug output
+    #     cv2.imwrite('debug_edges.png', edges)
+    #     cv2.imwrite('debug_horizontal.png', horizontal)
+        
+    #     return horizontal
+    
+    # def _extract_horizontal_lines(self, img: np.ndarray) -> np.ndarray:
+    #     """Extract horizontal lines using morphological operations."""
+    #     # Convert to grayscale
+    #     if img.ndim == 3:
+    #         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    #     else:
+    #         gray = img.copy()
+
+    #     # Invert and apply adaptive threshold
+    #     inv = cv2.bitwise_not(gray)
+    #     bw = cv2.adaptiveThreshold(
+    #         inv, 255,
+    #         cv2.ADAPTIVE_THRESH_MEAN_C,
+    #         cv2.THRESH_BINARY,
+    #         self.adaptive_block,
+    #         self.adaptive_c
+    #     )
+        
+    #     # Create horizontal kernel
+    #     cols = bw.shape[1]
+    #     horizontal_size = max(3, cols // self.horiz_kernel_div)
+    #     print(f"Kernel size: {horizontal_size}x1 for image width {cols}")
+    #     horizontal_kernel = cv2.getStructuringElement(
+    #         cv2.MORPH_RECT,
+    #         (horizontal_size, 1)
+    #     )
+
+    #     # Apply morphological operations
+    #     horizontal = cv2.erode(bw, horizontal_kernel)
+    #     horizontal = cv2.dilate(horizontal, horizontal_kernel)
+
+    #     return horizontal
 
     def _analyze_lines(self,
                        horizontal_img: np.ndarray,
@@ -340,52 +413,45 @@ class HorizontalLineDetector:
             'strength': float(line.strength)
         }
 
-    def visualize(self,
-                  image_path: Path,
-                  output_path: Path,
-                  lines: Optional[List[Dict[str, Any]]] = None,
-                  top_exclusion: float = 0.0, bottom_exclusion: float = 1.0) -> Path:
-        """
-        Create visualization of detected lines.
-
-        Args:
-            image_path: Path to input image
-            output_path: Path to save visualization
-            lines: Optional pre-detected lines (if None, will detect)
-
-        Returns:
-            Path to saved visualization
-        """
+    def visualize(self, image_path: Path, output_path: Path, 
+                lines: Optional[List[Dict[str, Any]]] = None,
+                top_exclusion: float = 0.0, bottom_exclusion: float = 1.0) -> Path:
         # Load image
         img = cv2.imread(str(image_path))
-        if img is None:
-            raise ValueError(f"Failed to load image: {image_path}")
-
         H, W = img.shape[:2]
-
+        
         # Detect lines if not provided
         if lines is None:
             result = self.detect(image_path, top_exclusion=top_exclusion,
-                                 bottom_exclusion=bottom_exclusion)
+                                bottom_exclusion=bottom_exclusion)
             lines = result['lines']
-
-        # Create overlay
+        
         overlay = img.copy()
-
+        
+        # DEBUG: Add exclusion zone visualization
+        top_line_y = int(top_exclusion * H)
+        bottom_line_y = int((1.0 - bottom_exclusion) * H)
+        cv2.line(overlay, (0, top_line_y), (W, top_line_y), (255, 0, 0), 2)  # Blue for top
+        cv2.line(overlay, (0, bottom_line_y), (W, bottom_line_y), (255, 0, 0), 2)  # Blue for bottom
+        
         # Draw each line
         for i, line_dict in enumerate(lines):
-            y = int(line_dict['y_position'] * H)
+            y = int(line_dict['y_position'] * H)  # This should be correct
             x1 = int(line_dict['x_start'] * W)
             x2 = int(line_dict['x_end'] * W)
-
+            
+            # DEBUG: Print line positions
+            print(f"Drawing line {i+1}: y_norm={line_dict['y_position']:.3f}, "
+                f"y_pixel={y}, x=[{x1}, {x2}]")
+            
             # Draw line
             cv2.line(overlay, (x1, y), (x2, y), (0, 255, 0), 2)
-
+            
             # Draw label
-            label = f"L{i + 1}"
+            label = f"L{i + 1}: y={line_dict['y_position']:.3f}"
             cv2.putText(overlay, label, (x2 + 5, y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-
+    
         # Blend with original
         alpha = 0.6
         output = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
@@ -442,13 +508,39 @@ def integrate_with_classifier(
     }
 
 
+def debug_line_detection(image_path: Path, top_exclusion: float, bottom_exclusion: float):
+    """Debug helper to understand line detection."""
+    img = cv2.imread(str(image_path))
+    H, W = img.shape[:2]
+    
+    print(f"\nImage dimensions: {W}x{H}")
+    print(f"Exclusions: top={top_exclusion}, bottom={bottom_exclusion}")
+    print(f"Scanning region: y={int(H*top_exclusion)} to y={int(H*(1-bottom_exclusion))}")
+    print(f"Scanning {(1-top_exclusion-bottom_exclusion)*100:.1f}% of image height\n")
+    
+    detector = HorizontalLineDetector(
+        min_line_length=0.3,
+        merge_threshold=0.02
+    )
+    
+    result = detector.detect(image_path, top_exclusion, bottom_exclusion)
+    
+    print(f"Lines detected: {result['num_lines']}")
+    for i, line in enumerate(result['lines']):
+        y_pixel = int(line['y_position'] * H)
+        print(f"Line {i+1}: y_norm={line['y_position']:.3f}, "
+              f"y_pixel={y_pixel}/{H}, "
+              f"x_span={line['x_span']:.3f}")
+    
+    return result
+
 def main():
     # Parse arguments
     ap = argparse.ArgumentParser()
     ap.add_argument("-i", "--image", required=True, help="Path to input image")
     ap.add_argument("-o", "--outdir", default="horizontal_lines_detection_results", help="Path to horizontal_line_detection_results image")
-    ap.add_argument("--top-exclusion", type=float, default=0.0, help="Fraction of top of image to exclude (0-1)")
-    ap.add_argument("--bottom-exclusion", type=float, default=1.0, help="Fraction of bottom of image to exclude (0-1)")
+    ap.add_argument("--top-exclusion", type=float, default=0.2, help="Fraction of top of image to exclude (0-1)")
+    ap.add_argument("--bottom-exclusion", type=float, default=0.2, help="Fraction of bottom of image to exclude (0-1)")
     ap.add_argument("--min-line-length", type=float, default=0.3, help="Minimum line length as fraction of image width")
     ap.add_argument("--merge-threshold", type=float, default=0.02, help="Threshold for merging nearby lines (normalized)")
 
@@ -483,6 +575,7 @@ def main():
         detector.visualize(image_path, viz_path, lines=result['lines'], top_exclusion=args.top_exclusion, bottom_exclusion=args.bottom_exclusion)
 
         print(f"\nVisualization saved to: {viz_path}")
+        debug_line_detection(image_path, args.top_exclusion, args.bottom_exclusion)
 
     else:
         print(f"Image not found: {image_path}")
