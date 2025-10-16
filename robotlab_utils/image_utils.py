@@ -13,7 +13,7 @@ def resize_keep_height(img: np.ndarray, target_h: int) -> Tuple[np.ndarray, floa
     
     Args:
         img: Input image
-        target_h: Target height
+        target_h: Target height in pixels
         
     Returns:
         Tuple of (resized_image, scale_factor)
@@ -24,14 +24,12 @@ def resize_keep_height(img: np.ndarray, target_h: int) -> Tuple[np.ndarray, floa
         return img, 1.0
     
     scale = target_h / h
-    new_w = max(1, int(round(w * scale)))
-    
-    resized = cv2.resize(img, (new_w, target_h), interpolation=cv2.INTER_AREA)
-    
+    target_w = int(w * scale)
+    resized = cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
     return resized, scale
 
 
-def extract_region(img: np.ndarray, bbox: list, 
+def extract_region(img: np.ndarray, bbox: list,
                    min_size: int = 10) -> Optional[np.ndarray]:
     """
     Extract region from image based on bounding box.
@@ -120,46 +118,192 @@ def apply_adaptive_threshold(img: np.ndarray,
 
 
 def enhance_contrast_CLAHE(img: np.ndarray,
-                    clip_limit: float = 2.0,
-                    tile_size: tuple = (8, 8)) -> np.ndarray:
+                           clip_limit: float = 2.0,
+                           tile_size: Tuple[int, int] = (8, 8)) -> np.ndarray:
     """
-    Enhance image contrast using CLAHE.
-    
+    Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) in LAB color space.
+
     Args:
-        img: Input image
-        clip_limit: Threshold for contrast limiting
+        img: Input image (BGR or grayscale)
+        clip_limit: CLAHE clip limit
         tile_size: Size of grid for histogram equalization
         
     Returns:
-        Contrast-enhanced image
+        Enhanced image in original color space
     """
-    # Convert to LAB color space if color image
-    if len(img.shape) == 3:
+    if img.ndim == 2:
+        # Grayscale image
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
+        return clahe.apply(img)
+    else:
+        # Color image - work in LAB space
         lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         
         # Apply CLAHE to L channel
         clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
-        l = clahe.apply(l)
-        
-        # Merge and convert back
-        enhanced = cv2.merge([l, a, b])
-        enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+        l_enhanced = clahe.apply(l)
+
+        lab_enhanced = cv2.merge([l_enhanced, a, b])
+        return cv2.cvtColor(lab_enhanced, cv2.COLOR_LAB2BGR)
+
+
+def edge_preserving_smooth(img: np.ndarray,
+                           method: str = "bilateral",
+                           bilateral_params: Optional[dict] = None,
+                           epf_params: Optional[dict] = None,
+                           nlmeans_params: Optional[dict] = None,
+                           gaussian_params: Optional[dict] = None) -> np.ndarray:
+    """
+    Apply edge-preserving smoothing to reduce noise while maintaining edges.
+
+    Args:
+        img: Input image (BGR or grayscale)
+        method: Smoothing method to use:
+            - 'bilateral': Bilateral filter (fast, good for most cases)
+            - 'epf': Edge Preserving Filter (slower, preserves edges better)
+            - 'nlmeans': Non-Local Means Denoising (slowest, best quality)
+            - 'gaussian': Standard Gaussian blur (fastest, not edge-preserving)
+    """
+    if img is None:
+        raise ValueError("Input image is None")
+
+    if method == "bilateral":
+        params = bilateral_params or {'d': 7, 'sigmaColor': 75, 'sigmaSpace': 75}
+        return cv2.bilateralFilter(img, **params)
+
+    elif method == "epf":
+        if img.ndim == 2:
+            img_bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+            params = epf_params or {'flags': 1, 'sigma_s': 60, 'sigma_r': 0.4}
+            result = cv2.edgePreservingFilter(img_bgr, **params)
+            return cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+        else:
+            params = epf_params or {'flags': 1, 'sigma_s': 60, 'sigma_r': 0.4}
+            return cv2.edgePreservingFilter(img, **params)
+
+    elif method == "nlmeans":
+        params = nlmeans_params or {'h': 10, 'templateWindowSize': 7, 'searchWindowSize': 21}
+        if img.ndim == 3:
+            return cv2.fastNlMeansDenoisingColored(
+                img, None,
+                params['h'], params['h'],
+                params['templateWindowSize'],
+                params['searchWindowSize']
+            )
+        else:
+            return cv2.fastNlMeansDenoising(
+                img, None,
+                params['h'],
+                params['templateWindowSize'],
+                params['searchWindowSize']
+            )
+
+    elif method == "gaussian":
+        params = gaussian_params or {'ksize': (7, 7), 'sigmaX': 0}
+        return cv2.GaussianBlur(img, **params)
+
     else:
-        # Apply CLAHE directly to grayscale
-        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
-        enhanced = clahe.apply(img)
-    
-    return enhanced
+        raise ValueError(f"Unknown smoothing method: {method}. "
+                         f"Choose from: 'bilateral', 'epf', 'nlmeans', 'gaussian'")
 
 
-def sobel_edge_detection(img):
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    # lap = cv2.Laplacian(img, cv2.CV_64F)
-    # lap = np.uint8(np.absolute(lap))
-    sobelX = cv2.Sobel(img, cv2.CV_64F, 1, 0)
-    sobelY = cv2.Sobel(img, cv2.CV_64F, 0, 1)
-    sobelX = np.uint8(np.absolute(sobelX))
-    sobelY = np.uint8(np.absolute(sobelY))
-    sobelCombined = cv2.bitwise_or(sobelX, sobelY)
-    return sobelCombined
+def preprocess_for_edge_detection(img: np.ndarray,
+                                  denoise_method: str = 'bilateral',
+                                  enhance_contrast: bool = True,
+                                  bilateral_params: Optional[dict] = None,
+                                  gaussian_params: Optional[dict] = None,
+                                  epf_params: Optional[dict] = None,
+                                  nlmeans_params: Optional[dict] = None,
+                                  clahe_params: Optional[dict] = None) -> np.ndarray:
+    """
+    Preprocess image for edge detection with configurable pipeline.
+
+    Args:
+        img: Input image (BGR or grayscale)
+        denoise_method: Denoising method ('bilateral', 'epf', 'nlmeans', 'gaussian', or 'none')
+        enhance_contrast: Whether to apply CLAHE contrast enhancement
+        bilateral_params: Parameters for bilateral filter
+        gaussian_params: Parameters for Gaussian blur
+        epf_params: Parameters for edge preserving filter
+        nlmeans_params: Parameters for non-local means denoising
+        clahe_params: Parameters for CLAHE
+
+    Returns:
+        Preprocessed grayscale image ready for edge detection
+    """
+    # Convert to grayscale if needed
+    if img.ndim == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = img.copy()
+
+    # Apply denoising
+    if denoise_method != 'none':
+        params_map = {
+            'bilateral': bilateral_params,
+            'gaussian': gaussian_params,
+            'epf': epf_params,
+            'nlmeans': nlmeans_params
+        }
+
+        kwargs = {f"{denoise_method}_params": params_map.get(denoise_method)}
+        gray = edge_preserving_smooth(gray, method=denoise_method, **{k: v for k, v in kwargs.items() if v is not None})
+
+    # Apply contrast enhancement if requested
+    if enhance_contrast:
+        params = clahe_params or {'clipLimit': 2.0, 'tileGridSize': (8, 8)}
+        clahe = cv2.createCLAHE(clipLimit=params['clipLimit'],
+                                tileGridSize=params['tileGridSize'])
+        gray = clahe.apply(gray)
+
+    return gray
+
+
+def extract_edges_for_curve_detection(img: np.ndarray,
+                                      canny_low: int = 15,
+                                      canny_high: int = 70,
+                                      denoise_method: str = 'bilateral',
+                                      morphology_close: bool = True,
+                                      morphology_dilate: bool = True) -> np.ndarray:
+    """
+    Extract edges optimized for detecting curved patterns (gel waves, phase boundaries).
+
+    This function combines preprocessing and edge detection specifically tuned for
+    detecting non-straight features like gel waves and phase separation boundaries
+    in vial images.
+
+    Args:
+        img: Input image (BGR or grayscale)
+        canny_low: Lower threshold for Canny edge detection
+        canny_high: Upper threshold for Canny edge detection
+        denoise_method: Denoising method ('bilateral', 'epf', 'nlmeans', 'gaussian', or 'none')
+        morphology_close: Apply morphological closing to connect edge segments
+        morphology_dilate: Apply dilation to thicken edges
+
+    Returns:
+        Binary edge map (uint8, values 0 or 255)
+    """
+
+    # Preprocess: denoise + enhance contrast
+    gray = preprocess_for_edge_detection(
+        img,
+        denoise_method=denoise_method,
+        enhance_contrast=True,
+        gaussian_params={'ksize': (7, 7), 'sigmaX': 0},
+        clahe_params={'clipLimit': 2.0, 'tileGridSize': (8, 8)}
+    )
+
+    # Detect edges with lower thresholds to catch faint gel waves
+    edges = cv2.Canny(gray, canny_low, canny_high)
+
+    # Apply morphological operations to connect wave segments
+    if morphology_close:
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 5))
+        edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_close)
+
+    if morphology_dilate:
+        kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
+        edges = cv2.dilate(edges, kernel_dilate, iterations=2)
+
+    return edges
