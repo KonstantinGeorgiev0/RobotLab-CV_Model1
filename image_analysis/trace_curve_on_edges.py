@@ -3,15 +3,18 @@ import argparse
 from pathlib import Path
 import numpy as np, cv2
 
+from robotlab_utils.image_utils import extract_edges_for_curve_detection
+
+
 def trace_curve_on_edges(edges, left_margin_frac=0.055, right_margin_frac=0.055,
                          top_frac=0.25, bottom_frac=0.85):
     H, W = edges.shape
-    # 1) connect fragments with a horizontal close
+    # connect fragments with a horizontal close
     k = max(3, W // 80)
     kh = cv2.getStructuringElement(cv2.MORPH_RECT, (k, 1))
     E = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kh, iterations=1)
 
-    # 2) mask margins & vertical search band
+    # mask margins & vertical search band
     lm = int(left_margin_frac * W)
     rm = int(right_margin_frac * W)
     top = int(top_frac * H)
@@ -21,14 +24,14 @@ def trace_curve_on_edges(edges, left_margin_frac=0.055, right_margin_frac=0.055,
     mask[top:bot, lm:W-rm] = 1
     E[mask == 0] = 0
 
-    # 3) column-wise topmost edge
+    # column-wise topmost edge
     rows = np.arange(H, dtype=np.int32)
     y = np.full(W, np.nan, np.float32)
     for x in range(lm, W-rm):
         ys = rows[E[:, x] > 0]
         if ys.size: y[x] = ys.min()
 
-    # 4) fill gaps + smooth (median then box)
+    # fill gaps + smooth (median then box)
     x = np.arange(W, dtype=np.float32)
     m = ~np.isnan(y)
     if m.sum() >= 2:
@@ -46,7 +49,7 @@ def trace_curve_on_edges(edges, left_margin_frac=0.055, right_margin_frac=0.055,
     y = medfilt(y, 9)
     y = np.convolve(y, np.ones(11)/11, mode="same")
 
-    # 5) metrics
+    # metrics
     A = np.vstack([x, np.ones_like(x)]).T
     sol, *_ = np.linalg.lstsq(A, y, rcond=None)
     yhat = sol[0]*x + sol[1]
@@ -56,39 +59,30 @@ def trace_curve_on_edges(edges, left_margin_frac=0.055, right_margin_frac=0.055,
 
     return y, wiggle, curvature
 
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("image", help="input vial crop (BGR or gray)")
     ap.add_argument("--outdir", default="trace_curve_results")
-    ap.add_argument("--canny", nargs=2, type=int, default=[60, 140],
+    ap.add_argument("--canny", nargs=2, type=int, default=[15, 70],
                     help="Canny thresholds low high")
+    ap.add_argument("--denoise", choices=['bilateral', 'epf', 'nlmeans', 'gaussian', 'none'],
+                    default='bilateral', help="Denoising method")
     args = ap.parse_args()
 
     outdir = Path(args.outdir); outdir.mkdir(parents=True, exist_ok=True)
     img = cv2.imread(args.image, cv2.IMREAD_COLOR)
     if img is None: raise SystemExit(f"Could not read: {args.image}")
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.bilateralFilter(gray, 7, 60, 60)          # edge-preserving denoise
-    # edges = cv2.Canny(gray, args.canny[0], args.canny[1], L2gradient=True)
-
-    # Apply stronger Gaussian blur to merge nearby wave components
-    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
-
-    # Enhance contrast
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(blurred)
-
-    # Detect edges using Canny with lower thresholds to catch faint gel waves
-    edges = cv2.Canny(enhanced, 15, 70)
-
-    # Apply stronger morphological closing to connect wave segments better
-    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 5))
-    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel_close)
-
-    # Dilate more to make waves thicker and more connected
-    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
-    edges = cv2.dilate(edges, kernel_dilate, iterations=2)
+    # Use centralized edge extraction function with configurable denoising
+    edges = extract_edges_for_curve_detection(
+        img,
+        canny_low=args.canny[0],
+        canny_high=args.canny[1],
+        denoise_method=args.denoise,
+        morphology_close=True,
+        morphology_dilate=True
+    )
 
     y, wiggle, curvature = trace_curve_on_edges(edges)
     overlay = img.copy()
@@ -106,6 +100,7 @@ def main():
     cv2.imwrite(str(outdir / f"{stem}_edges.png"), edges)
     cv2.imwrite(str(outdir / f"{stem}_curve_overlay.png"), overlay)
     print(f"Saved to {outdir}")
+
 
 if __name__ == "__main__":
     main()
