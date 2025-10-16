@@ -5,7 +5,7 @@ import cv2
 import matplotlib.pyplot as plt
 
 # ---------------------- CONFIG ----------------------
-IMG_PATH = '../data/bulk_test_cropped/Day_1_20w%_Proglyde_DMM_vial00.png'
+IMG_PATH = '../../data/bulk_test_cropped/Day_1_20w%_Proglyde_DMM_vial00.png'
 CANNY_LOW, CANNY_HIGH = 50, 150
 SOBEL_K, LAPL_K = 3, 3
 DFT_LOW, DFT_HIGH = 6, 120
