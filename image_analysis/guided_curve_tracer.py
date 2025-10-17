@@ -89,9 +89,11 @@ class GuidedCurveTracer:
 
         # Step 5: Smooth and denoise
         ys_smooth = self._smooth_curve(ys)
+        y_variance = np.var(ys_smooth)
 
         # Prepare metadata
         metadata = {
+            'y_variance': float(y_variance),
             'guide_y_normalized': float(guide_y),
             'guide_y_px': guide_y_px,
             'search_region': {
@@ -100,7 +102,7 @@ class GuidedCurveTracer:
             },
             'horizontal_bounds': self.horizontal_bounds,
             'vertical_bounds': self.vertical_bounds,
-            'num_points': len(xs)
+            'num_points': len(xs),
         }
 
         return xs, ys_smooth, metadata
