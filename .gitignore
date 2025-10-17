@@ -3,7 +3,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
-# ignore yolo repo
+# results folder
+results/
+
+# yolo repo
 yolov5/
  
 # ignore image data files
