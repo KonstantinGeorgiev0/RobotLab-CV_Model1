@@ -3,7 +3,6 @@ import argparse
 from pathlib import Path
 import numpy as np, cv2
 
-import numpy as np, cv2
 
 def keep_near_horizontal(edges_u8, theta_deg=15):
     """Mask edges to only those with near-horizontal gradient orientation."""
