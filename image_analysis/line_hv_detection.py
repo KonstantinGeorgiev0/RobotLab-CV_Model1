@@ -7,7 +7,7 @@ import argparse
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Optional, Union, TypeVar, Tuple
 from dataclasses import dataclass
 import sys
 
@@ -61,6 +61,10 @@ class VerticalLine:
                 )
 
 
+# define typevar T for type hinting
+T = TypeVar('T', HorizontalLine, VerticalLine)
+
+
 class LineDetector:
     """Detector for horizontal and vertical lines in vial images."""
 
@@ -81,22 +85,23 @@ class LineDetector:
         self.min_line_strength = min_line_strength
         self.merge_threshold = merge_threshold
 
-    def detect(self, 
-               image_path: Path, 
-               top_exclusion: float = 0.0, 
+
+    def detect(self,
+               image_path: Path,
+               top_exclusion: float = 0.0,
                bottom_exclusion: float = 0.0,
                save_debug: bool = False,
                debug_dir: Optional[Path] = None) -> Dict[str, Any]:
         """
         Detect both horizontal and vertical lines.
-        
+
         Args:
             image_path: Path to input image
             top_exclusion: Fraction of top to exclude (0-1)
             bottom_exclusion: Fraction of bottom to exclude (0-1)
             save_debug: Whether to save debug images
             debug_dir: Directory for debug images
-            
+
         Returns:
             Dictionary with detection results
         """
@@ -121,10 +126,10 @@ class LineDetector:
         )
 
         # Extract horizontal lines
-        horizontal_img = self._extract_horizontal_lines(bw, W)
+        horizontal_img = self._extract_lines(bw, W, 'horizontal')
 
         # Extract vertical lines
-        vertical_img = self._extract_vertical_lines(bw, H)
+        vertical_img = self._extract_lines(bw, H, 'vertical')
 
         # Save debug images if requested
         if save_debug and debug_dir:
@@ -138,8 +143,8 @@ class LineDetector:
         # Analyze vertical lines to find vial boundaries
         vertical_lines = self._analyze_vertical_lines(vertical_img, H, W)
         vertical_lines = self._merge_nearby_vertical_lines(vertical_lines)
-        vertical_lines = [l for l in vertical_lines 
-                         if l.y_span >= self.min_line_length 
+        vertical_lines = [l for l in vertical_lines
+                         if l.y_span >= self.min_line_length
                          and l.strength >= self.min_line_strength]
         vertical_lines.sort(key=lambda l: l.x_position)
 
@@ -149,29 +154,29 @@ class LineDetector:
 
         # Analyze horizontal lines within vial boundaries
         horizontal_lines = self._analyze_horizontal_lines(
-            horizontal_img, H, W, 
+            horizontal_img, H, W,
             top_exclusion, bottom_exclusion,
             left_boundary, right_boundary
         )
         horizontal_lines = self._merge_nearby_horizontal_lines(horizontal_lines)
-        horizontal_lines = [l for l in horizontal_lines 
-                           if l.x_span >= self.min_line_length 
+        horizontal_lines = [l for l in horizontal_lines
+                           if l.x_span >= self.min_line_length
                            and l.strength >= self.min_line_strength]
         horizontal_lines.sort(key=lambda l: l.y_position)
 
         # Create summaries
-        h_summary = self._create_horizontal_summary(horizontal_lines, H, W)
-        v_summary = self._create_vertical_summary(vertical_lines, H, W)
+        h_summary = self._create_line_summary(horizontal_lines, H, W)
+        v_summary = self._create_line_summary(vertical_lines, H, W)
 
         return {
             'horizontal_lines': {
                 'num_lines': len(horizontal_lines),
-                'lines': [self._horizontal_line_to_dict(l) for l in horizontal_lines],
+                'lines': [self._line_to_dic(l) for l in horizontal_lines],
                 'summary': h_summary
             },
             'vertical_lines': {
                 'num_lines': len(vertical_lines),
-                'lines': [self._vertical_line_to_dict(l) for l in vertical_lines],
+                'lines': [self._line_to_dic(l) for l in vertical_lines],
                 'summary': v_summary,
                 'left_boundary': float(left_boundary),
                 'right_boundary': float(right_boundary)
@@ -179,27 +184,122 @@ class LineDetector:
             'image_size': {'height': H, 'width': W}
         }
 
-    def _extract_horizontal_lines(self, bw: np.ndarray, width: int) -> np.ndarray:
-        """Extract horizontal lines using morphology."""
-        horizontal = np.copy(bw)
-        horizontal_size = max(3, width // self.horiz_kernel_div)
-        horizontal_kernel = cv2.getStructuringElement(
-            cv2.MORPH_RECT, (horizontal_size, 1)
-        )
-        horizontal = cv2.erode(horizontal, horizontal_kernel)
-        horizontal = cv2.dilate(horizontal, horizontal_kernel)
-        return horizontal
 
-    def _extract_vertical_lines(self, bw: np.ndarray, height: int) -> np.ndarray:
-        """Extract vertical lines using morphology."""
-        vertical = np.copy(bw)
-        vertical_size = max(3, height // self.vert_kernel_div)
-        vertical_kernel = cv2.getStructuringElement(
-            cv2.MORPH_RECT, (1, vertical_size)
-        )
-        vertical = cv2.erode(vertical, vertical_kernel)
-        vertical = cv2.dilate(vertical, vertical_kernel)
-        return vertical
+    def _extract_lines(self, bw: np.ndarray, size: int, orientation: str
+                       ) -> np.ndarray:
+        """Extract lines using morphology."""
+        line = np.copy(bw)
+
+        if orientation == 'horizontal':
+            line_size = int(np.clip(size / self.horiz_kernel_div, 5, 51))
+            line_kernel = cv2.getStructuringElement(
+                cv2.MORPH_RECT, (line_size, 1)
+            )
+        elif orientation =='vertical':
+            line_size = int(np.clip(size / self.vert_kernel_div, 5, 51))
+            line_kernel = cv2.getStructuringElement(
+                cv2.MORPH_RECT, (1, line_size)
+            )
+        else:
+            raise ValueError("Invalid orientation. Use 'horizontal' or 'vertical'.")
+
+        line = cv2.erode(line, line_kernel)
+        line = cv2.dilate(line, line_kernel)
+        return line
+
+
+    def _analyze_lines(self,
+                       line_img: np.ndarray,
+                       height: int,
+                       width: int,
+                       line_type: str,
+                       top_exclusion: float = 0.0,
+                       bottom_exclusion: float = 0.0,
+                       left_boundary: float = 0.0,
+                       right_boundary: float = 1.0) -> List[Union[HorizontalLine, VerticalLine]]:
+        """Generic method to analyze lines in an image."""
+        lines = []
+
+        if line_type == 'horizontal':
+            # Calculate exclusion zones
+            top_idx = int(height * top_exclusion)
+            bottom_idx = int(height * (1.0 - bottom_exclusion))
+            top_idx = max(0, min(top_idx, height))
+            bottom_idx = max(0, min(bottom_idx, height))
+
+            if bottom_idx <= top_idx:
+                return lines
+
+            # Convert boundary to pixel coordinates
+            left_pixel = int(left_boundary * width)
+            right_pixel = int(right_boundary * width)
+
+            for y in range(top_idx, bottom_idx):
+                # Only look at pixels within vial boundaries
+                row = line_img[y, left_pixel:right_pixel]
+
+                white_pixels = np.where(row > 127)[0]
+                if len(white_pixels) == 0:
+                    continue
+
+                # Group continuous segments
+                segments = self._group_segments(white_pixels)
+
+                # Create line objects for significant segments
+                for segment in segments:
+                    if len(segment) < (right_pixel - left_pixel) * 0.1:
+                        continue
+
+                    # Adjust x positions relative to full image
+                    x_start = (left_pixel + min(segment)) / width
+                    x_end = (left_pixel + max(segment)) / width
+                    y_norm = y / height
+
+                    strength = len(segment) / (max(segment) - min(segment) + 1)
+
+                    line = HorizontalLine(
+                        y_position=y_norm,
+                        x_start=x_start,
+                        x_end=x_end,
+                        thickness=1,
+                        strength=strength
+                    )
+                    lines.append(line)
+
+        elif line_type == 'vertical':
+            for x in range(width):
+                col = line_img[:, x]
+
+                white_pixels = np.where(col > 127)[0]
+                if len(white_pixels) == 0:
+                    continue
+
+                # Group continuous segments
+                segments = self._group_segments(white_pixels)
+
+                # Create line objects for significant segments
+                for segment in segments:
+                    if len(segment) < height * 0.1:
+                        continue
+
+                    y_start = min(segment) / height
+                    y_end = max(segment) / height
+                    x_norm = x / width
+
+                    strength = len(segment) / (max(segment) - min(segment) + 1)
+
+                    line = VerticalLine(
+                        x_position=x_norm,
+                        y_start=y_start,
+                        y_end=y_end,
+                        thickness=1,
+                        strength=strength
+                    )
+                    lines.append(line)
+        else:
+            raise ValueError(f"Invalid line_type: {line_type}. Use 'horizontal' or 'vertical'.")
+
+        return lines
 
     def _analyze_horizontal_lines(self,
                                   horizontal_img: np.ndarray,
@@ -210,91 +310,17 @@ class LineDetector:
                                   left_boundary: float,
                                   right_boundary: float) -> List[HorizontalLine]:
         """Analyze horizontal lines within vial boundaries."""
-        lines = []
-        top_idx = int(height * top_exclusion)
-        bottom_idx = int(height * (1.0 - bottom_exclusion))
-        top_idx = max(0, min(top_idx, height))
-        bottom_idx = max(0, min(bottom_idx, height))
-
-        if bottom_idx <= top_idx:
-            return lines
-
-        # Convert boundary to pixel coordinates
-        left_pixel = int(left_boundary * width)
-        right_pixel = int(right_boundary * width)
-
-        for y in range(top_idx, bottom_idx):
-            # Only look at pixels within vial boundaries
-            row = horizontal_img[y, left_pixel:right_pixel]
-
-            white_pixels = np.where(row > 127)[0]
-            if len(white_pixels) == 0:
-                continue
-
-            # Group continuous segments
-            segments = self._group_segments(white_pixels)
-
-            # Create line objects for significant segments
-            for segment in segments:
-                if len(segment) < (right_pixel - left_pixel) * 0.1:
-                    continue
-
-                # Adjust x positions relative to full image
-                x_start = (left_pixel + min(segment)) / width
-                x_end = (left_pixel + max(segment)) / width
-                y_norm = y / height
-
-                strength = len(segment) / (max(segment) - min(segment) + 1)
-
-                line = HorizontalLine(
-                    y_position=y_norm,
-                    x_start=x_start,
-                    x_end=x_end,
-                    thickness=1,
-                    strength=strength
-                )
-                lines.append(line)
-
-        return lines
+        return self._analyze_lines(
+            horizontal_img, height, width, 'horizontal',
+            top_exclusion, bottom_exclusion, left_boundary, right_boundary
+        )
 
     def _analyze_vertical_lines(self,
                                 vertical_img: np.ndarray,
                                 height: int,
                                 width: int) -> List[VerticalLine]:
         """Analyze vertical lines."""
-        lines = []
-
-        for x in range(width):
-            col = vertical_img[:, x]
-
-            white_pixels = np.where(col > 127)[0]
-            if len(white_pixels) == 0:
-                continue
-
-            # Group continuous segments
-            segments = self._group_segments(white_pixels)
-
-            # Create line objects for significant segments
-            for segment in segments:
-                if len(segment) < height * 0.1:
-                    continue
-
-                y_start = min(segment) / height
-                y_end = max(segment) / height
-                x_norm = x / width
-
-                strength = len(segment) / (max(segment) - min(segment) + 1)
-
-                line = VerticalLine(
-                    x_position=x_norm,
-                    y_start=y_start,
-                    y_end=y_end,
-                    thickness=1,
-                    strength=strength
-                )
-                lines.append(line)
-
-        return lines
+        return self._analyze_lines(vertical_img, height, width, 'vertical')
 
     def _group_segments(self, pixels: np.ndarray, max_gap: int = 2) -> List[List[int]]:
         """Group continuous pixel segments allowing small gaps."""
@@ -317,12 +343,26 @@ class LineDetector:
 
         return segments
 
-    def _merge_nearby_horizontal_lines(self, lines: List[HorizontalLine]) -> List[HorizontalLine]:
-        """Merge horizontal lines that are close vertically."""
+
+    def _merge_nearby_lines(self, lines: List[T]) -> List[T]:
+        """Generic method to merge lines that are close to each other."""
         if len(lines) <= 1:
             return lines
 
-        lines = sorted(lines, key=lambda l: l.y_position)
+        # Determine sorting key and position comparison based on line type
+        if not lines:
+            return lines
+
+        if isinstance(lines[0], HorizontalLine):
+            sort_key = lambda l: l.y_position
+            position_key = lambda l: l.y_position
+        elif isinstance(lines[0], VerticalLine):
+            sort_key = lambda l: l.x_position
+            position_key = lambda l: l.x_position
+        else:
+            raise ValueError(f"Unsupported line type: {type(lines[0])}")
+
+        lines = sorted(lines, key=sort_key)
         merged = []
         current_group = [lines[0]]
 
@@ -330,138 +370,138 @@ class LineDetector:
             line = lines[i]
             prev_line = current_group[-1]
 
-            if abs(line.y_position - prev_line.y_position) < self.merge_threshold:
+            if abs(position_key(line) - position_key(prev_line)) < self.merge_threshold:
                 current_group.append(line)
             else:
-                merged.append(self._merge_horizontal_group(current_group))
+                merged.append(self._merge_line_group(current_group))
                 current_group = [line]
 
         if current_group:
-            merged.append(self._merge_horizontal_group(current_group))
+            merged.append(self._merge_line_group(current_group))
 
         return merged
+
+
+    def _merge_nearby_horizontal_lines(self, lines: List[HorizontalLine]) -> List[HorizontalLine]:
+        """Merge horizontal lines that are close vertically."""
+        return self._merge_nearby_lines(lines)
+
 
     def _merge_nearby_vertical_lines(self, lines: List[VerticalLine]) -> List[VerticalLine]:
         """Merge vertical lines that are close horizontally."""
-        if len(lines) <= 1:
-            return lines
+        return self._merge_nearby_lines(lines)
 
-        lines = sorted(lines, key=lambda l: l.x_position)
-        merged = []
-        current_group = [lines[0]]
 
-        for i in range(1, len(lines)):
-            line = lines[i]
-            prev_line = current_group[-1]
+    def _merge_line_group(self, group: List[T]) -> T:
+        """Method to merge a group of lines (horizontal or vertical)."""
+        if len(group) == 1:
+            return group[0]
 
-            if abs(line.x_position - prev_line.x_position) < self.merge_threshold:
-                current_group.append(line)
-            else:
-                merged.append(self._merge_vertical_group(current_group))
-                current_group = [line]
+        total_strength = sum(l.strength for l in group)
+        strength_avg = total_strength / len(group)
+        thickness = sum(l.thickness for l in group)
 
-        if current_group:
-            merged.append(self._merge_vertical_group(current_group))
+        if isinstance(group[0], HorizontalLine):
+            # Merge horizontal lines
+            y_avg = sum(l.y_position * l.strength for l in group) / total_strength
+            x_start = min(l.x_start for l in group)
+            x_end = max(l.x_end for l in group)
 
-        return merged
+            return HorizontalLine(
+                y_position=y_avg,
+                x_start=x_start,
+                x_end=x_end,
+                thickness=thickness,
+                strength=strength_avg
+            )
+
+        elif isinstance(group[0], VerticalLine):
+            # Merge vertical lines
+            x_avg = sum(l.x_position * l.strength for l in group) / total_strength
+            y_start = min(l.y_start for l in group)
+            y_end = max(l.y_end for l in group)
+
+            return VerticalLine(
+                x_position=x_avg,
+                y_start=y_start,
+                y_end=y_end,
+                thickness=thickness,
+                strength=strength_avg
+            )
+
+        else:
+            raise ValueError(f"Unsupported line type: {type(group[0])}")
+
 
     def _merge_horizontal_group(self, group: List[HorizontalLine]) -> HorizontalLine:
         """Merge a group of horizontal lines."""
-        if len(group) == 1:
-            return group[0]
+        return self._merge_line_group(group)
 
-        total_strength = sum(l.strength for l in group)
-        y_avg = sum(l.y_position * l.strength for l in group) / total_strength
-        x_start = min(l.x_start for l in group)
-        x_end = max(l.x_end for l in group)
-        strength_avg = total_strength / len(group)
-        thickness = sum(l.thickness for l in group)
-
-        return HorizontalLine(
-            y_position=y_avg,
-            x_start=x_start,
-            x_end=x_end,
-            thickness=thickness,
-            strength=strength_avg
-        )
 
     def _merge_vertical_group(self, group: List[VerticalLine]) -> VerticalLine:
         """Merge a group of vertical lines."""
-        if len(group) == 1:
-            return group[0]
+        return self._merge_line_group(group)
 
-        total_strength = sum(l.strength for l in group)
-        x_avg = sum(l.x_position * l.strength for l in group) / total_strength
-        y_start = min(l.y_start for l in group)
-        y_end = max(l.y_end for l in group)
-        strength_avg = total_strength / len(group)
-        thickness = sum(l.thickness for l in group)
 
-        return VerticalLine(
-            x_position=x_avg,
-            y_start=y_start,
-            y_end=y_end,
-            thickness=thickness,
-            strength=strength_avg
-        )
-
-    def _create_horizontal_summary(self, lines: List[HorizontalLine], 
-                                   height: int, width: int) -> Dict[str, Any]:
-        """Create summary for horizontal lines."""
+    def _create_line_summary(self, lines: List[Union[HorizontalLine, VerticalLine]],
+                             height: int, width: int) -> Dict[str, Any]:
+        """Create summary for lines."""
         if not lines:
             return {'message': 'No horizontal lines detected'}
 
-        y_positions = [l.y_position for l in lines]
-        return {
-            'vertical_span': {
-                'min': float(min(y_positions)),
-                'max': float(max(y_positions)),
-                'range': float(max(y_positions) - min(y_positions))
-            },
-            'average_line_length': float(np.mean([l.x_span for l in lines])),
-            'average_line_strength': float(np.mean([l.strength for l in lines]))
-        }
+        if isinstance(lines[0], HorizontalLine):
+            y_positions = [l.y_position for l in lines]
+            return {
+                'vertical_span': {
+                    'min': float(min(y_positions)),
+                    'max': float(max(y_positions)),
+                    'range': float(max(y_positions) - min(y_positions))
+                },
+                'average_line_length': float(np.mean([l.x_span for l in lines])),
+                'average_line_strength': float(np.mean([l.strength for l in lines]))
+            }
 
-    def _create_vertical_summary(self, lines: List[VerticalLine], 
-                                 height: int, width: int) -> Dict[str, Any]:
-        """Create summary for vertical lines."""
-        if not lines:
-            return {'message': 'No vertical lines detected'}
+        else:
+            x_positions = [l.x_position for l in lines]
+            return {
+                'horizontal_span': {
+                    'min': float(min(x_positions)),
+                    'max': float(max(x_positions)),
+                    'range': float(max(x_positions) - min(x_positions))
+                },
+                'average_line_length': float(np.mean([l.y_span for l in lines])),
+                'average_line_strength': float(np.mean([l.strength for l in lines]))
+            }
 
-        x_positions = [l.x_position for l in lines]
-        return {
-            'horizontal_span': {
-                'min': float(min(x_positions)),
-                'max': float(max(x_positions)),
-                'range': float(max(x_positions) - min(x_positions))
-            },
-            'average_line_length': float(np.mean([l.y_span for l in lines])),
-            'average_line_strength': float(np.mean([l.strength for l in lines]))
-        }
 
-    def _horizontal_line_to_dict(self, line: HorizontalLine) -> Dict[str, Any]:
-        """Convert horizontal line to dictionary."""
-        return {
-            'y_position': float(line.y_position),
-            'x_start': float(line.x_start),
-            'x_end': float(line.x_end),
-            'x_center': float(line.x_center),
-            'x_span': float(line.x_span),
-            'thickness': int(line.thickness),
-            'strength': float(line.strength)
-        }
+    def _line_to_dic(self, line: Union[HorizontalLine, VerticalLine]) -> Dict[str, Any]:
+        """Convert line to dictionary."""
 
-    def _vertical_line_to_dict(self, line: VerticalLine) -> Dict[str, Any]:
-        """Convert vertical line to dictionary."""
-        return {
-            'x_position': float(line.x_position),
-            'y_start': float(line.y_start),
-            'y_end': float(line.y_end),
-            'y_center': float(line.y_center),
-            'y_span': float(line.y_span),
-            'thickness': int(line.thickness),
-            'strength': float(line.strength)
-        }
+        # if line is horizontal
+        if isinstance(line, HorizontalLine):
+            return {
+                'type': type(line).__name__,
+                'y_position': float(line.y_position),
+                'x_start': float(line.x_start),
+                'x_end': float(line.x_end),
+                'x_center': float(line.x_center),
+                'y_span': float(line.x_span),
+                'thickness': int(line.thickness),
+                'strength': float(line.strength)
+            }
+        # if line is vertical
+        else:
+            return {
+                'type': type(line).__name__,
+                'x_position': float(line.x_position),
+                'y_start': float(line.y_start),
+                'y_end': float(line.y_end),
+                'y_center': float(line.y_center),
+                'y_span': float(line.y_span),
+                'thickness': int(line.thickness),
+                'strength': float(line.strength)
+            }
+
 
     def visualize(self,
                   image_path: Path,
@@ -506,7 +546,7 @@ class LineDetector:
         if result['vertical_lines']['num_lines'] > 0:
             left_x = int(result['vertical_lines']['left_boundary'] * W)
             right_x = int(result['vertical_lines']['right_boundary'] * W)
-            
+
             for y in range(0, H, 20):
                 cv2.line(overlay, (left_x, y), (left_x, min(y+10, H)), (255, 0, 255), 2)
                 cv2.line(overlay, (right_x, y), (right_x, min(y+10, H)), (255, 0, 255), 2)
@@ -536,6 +576,77 @@ class LineDetector:
         # Save
         cv2.imwrite(str(output_path), output)
         return output_path
+
+#
+# def _edge_map_for_walls(img_bgr):
+#     """Crisp edges for rigid walls (NO dilation/closing)."""
+#     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+#     gray = cv2.GaussianBlur(gray, (3,3), 0)
+#     # higher thresholds so we keep the hard outer contour, drop faint interior streaks
+#     edges = cv2.Canny(gray, 80, 180)
+#     return edges
+#
+# def detect_vial_wall_xcoords_by_components(
+#         img_bgr,
+#         left_strip_frac: float = 0.15,    # search only in left/right border strips
+#         right_strip_frac: float = 0.15,
+#         min_vert_span_frac: float = 0.45, # require tall components
+#         y_band: tuple[int,int] | None = None
+#     ) -> tuple[int,int]:
+#     """
+#     Returns (x_left, x_right) — the outer wall x's in pixels.
+#
+#     Approach: connected components in left/right strips of a crisp edge map.
+#     Picks the component with the largest vertical span that's nearest the border
+#     (i.e., smallest x on the left, largest x on the right).
+#     """
+#     H, W = img_bgr.shape[:2]
+#     edges = _edge_map_for_walls(img_bgr)
+#
+#     if y_band is None:
+#         y0, y1 = int(0.12*H), int(0.90*H)   # ignore cap and bottom bulb
+#     else:
+#         y0, y1 = max(0, y_band[0]), min(H-1, y_band[1])
+#
+#     band = np.zeros_like(edges)
+#     band[y0:y1+1, :] = 255
+#     edges = cv2.bitwise_and(edges, band)
+#
+#     Lw = int(left_strip_frac * W)
+#     Rw = int(right_strip_frac * W)
+#
+#     left_mask  = np.zeros_like(edges);  left_mask[:, :max(1,Lw)]  = 255
+#     right_mask = np.zeros_like(edges);  right_mask[:, W-max(1,Rw):] = 255
+#
+#     left_edges  = cv2.bitwise_and(edges, left_mask)
+#     right_edges = cv2.bitwise_and(edges, right_mask)
+#
+#     def pick_side(binary, is_left=True):
+#         # close a bit to connect broken wall edges
+#         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE,
+#                                   cv2.getStructuringElement(cv2.MORPH_RECT, (3,9)))
+#         n, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+#         best_x = None; best_h = 0
+#         for i in range(1, n):
+#             x, y, w, h, area = stats[i]
+#             if h < int(min_vert_span_frac*H):
+#                 continue
+#             x_mid = x + w//2
+#             if is_left:
+#                 if (best_x is None) or (x_mid < best_x) or (x_mid == best_x and h > best_h):
+#                     best_x, best_h = x_mid, h
+#             else:
+#                 if (best_x is None) or (x_mid > best_x) or (x_mid == best_x and h > best_h):
+#                     best_x, best_h = x_mid, h
+#         if best_x is None:
+#             # fallback to strip edge
+#             return 0 if is_left else W-1
+#         return int(best_x)
+#
+#     x_left  = pick_side(left_edges,  is_left=True)
+#     x_right = pick_side(right_edges, is_left=False)
+#
+#     return x_left, x_right
 
 
 def main():
@@ -607,7 +718,7 @@ def main():
                   f"strength={line['strength']:.3f}")
 
     # Create visualization
-    viz_path = outdir / f"{image_path.stem}_lines.jpg"
+    viz_path = outdir / f"{image_path.stem}_lines.png"
     detector.visualize(
         image_path, viz_path, result,
         args.top_exclusion, args.bottom_exclusion
