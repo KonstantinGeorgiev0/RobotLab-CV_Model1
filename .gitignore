@@ -3,6 +3,16 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# ignore yolo repo
+yolov5/
+ 
+# ignore image data files
+data/
+
+.idea
+.DS_Store
+image_analysis/.DS_Store
+
 # C extensions
 *.so
 
