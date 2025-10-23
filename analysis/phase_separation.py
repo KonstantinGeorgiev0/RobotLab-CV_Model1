@@ -6,7 +6,9 @@ Analyzes liquid detections to determine if vial exhibits phase separation.
 import numpy as np
 from typing import List, Dict, Any, Tuple, Optional
 
-from config import PHASE_SEPARATION_THRESHOLDS, CLASS_IDS, LIQUID_CLASSES
+from config import PHASE_SEPARATION_THRESHOLDS, CLASS_IDS, LIQUID_CLASSES, LINE_PARAMS, REGION_EXCLUSION
+from image_analysis.line_hv_detection import LineDetector
+from pathlib import Path
 
 
 class PhaseSeparationDetector:
@@ -32,11 +34,13 @@ class PhaseSeparationDetector:
                detections: List[Dict[str, Any]], 
                image_height: int,
                image_width: int,
-               cap_bottom_y: Optional[float] = None) -> Tuple[bool, Dict[str, Any]]:
+               cap_bottom_y: Optional[float] = None,
+               image_path: Optional[Path] = None) -> Tuple[bool, Dict[str, Any]]:
         """
         Detect phase separation from liquid detections.
         
         Args:
+            image_path: Path to input image
             detections: List of detection dictionaries
             image_height: Height of image in pixels
             image_width: Width of image in pixels
@@ -45,53 +49,77 @@ class PhaseSeparationDetector:
         Returns:
             Tuple of (is_separated, analysis_metrics)
         """
-        # Filter to liquid detections only
+        # Keep only liquid detections
         liquid_dets = self._filter_liquid_detections(
-            detections, 
-            image_height, 
-            image_width,
-            cap_bottom_y
+            detections, image_height, image_width, cap_bottom_y
         )
-        
         if len(liquid_dets) < 1:
-            return False, {'reason': 'no_liquid_detections'}
-        
-        # Method 1: Count-based detection
-        if len(liquid_dets) >= 2:
-            return True, {
-                'method': 'multiple_liquid_regions',
-                'num_regions': len(liquid_dets)
-            }
-        
-        # Sort detections by vertical position
-        # liquid_dets = sorted(liquid_dets, key=lambda d: d['center_y'])
-        detections = sorted(detections, key=lambda x: x['center_y'])
+            return False, {"reason": "no_liquid_detections"}
 
-        # Method 2: Gap-based detection
-        is_separated, gap_metrics = self._check_vertical_gaps(
-            detections, image_height
-            # liquid_dets, image_height
-        )
-        if is_separated:
+        # Sort liquid detections by vertical center
+        liquid_dets = sorted(liquid_dets, key=lambda d: d["center_y"])
+
+        # Count-based heuristic (multiple liquid regions from detector)
+        if len(liquid_dets) >= 2:
+            metrics = {
+                "method": "multiple_liquid_regions",
+                "num_regions": len(liquid_dets),
+            }
+            return True, metrics
+
+        # Horizontal-line detection
+        horiz_metrics: Dict[str, Any] = {}
+
+        if image_path is not None:
+            detector = LineDetector(
+                min_line_length=LINE_PARAMS["min_line_length"],
+                merge_threshold=LINE_PARAMS["merge_threshold"],
+            )
+            line_result = detector.detect(
+                image_path=Path(image_path),
+                top_exclusion=REGION_EXCLUSION["top_fraction"],
+                bottom_exclusion=REGION_EXCLUSION["bottom_fraction"],
+            )
+
+            h_lines = line_result["horizontal_lines"]["lines"]
+            num_hlines = int(line_result["horizontal_lines"]["num_lines"])
+            y_norms = [float(l["y_position"]) for l in h_lines]
+            y_pixels = [int(round(y * image_height)) for y in y_norms]
+
+            horiz_metrics = {
+                "method": "horizontal_lines",
+                "num_horizontal_lines": num_hlines,
+                "y_norm": y_norms,
+                "y_pixels": y_pixels,
+                "left_boundary_norm": float(line_result["vertical_lines"]["left_boundary"]),
+                "right_boundary_norm": float(line_result["vertical_lines"]["right_boundary"]),
+            }
+
+            # phase separation
+            if num_hlines >= 2:
+                return True, horiz_metrics
+
+        # Gap-based check between top/bottom of the liquid region
+        is_sep, gap_metrics = self._check_vertical_gaps(liquid_dets, image_height)
+        if is_sep:
+            gap_metrics.update(horiz_metrics)
             return True, gap_metrics
-        
-        # Method 3: Span-based detection
-        is_separated, span_metrics = self._check_vertical_span(
-            detections, image_height
-            # liquid_dets, image_height
-        )
-        if is_separated:
+
+        # Span-based check (stratification)
+        is_sep, span_metrics = self._check_vertical_span(liquid_dets, image_height)
+        if is_sep:
+            span_metrics.update(horiz_metrics)
             return True, span_metrics
-        
-        # Method 4: Layer analysis
-        is_separated, layer_metrics = self._analyze_layers(
-            detections, image_height
-            # liquid_dets, image_height
-        )
-        if is_separated:
+
+        # Layer analysis
+        is_sep, layer_metrics = self._analyze_layers(liquid_dets, image_height)
+        if is_sep:
+            layer_metrics.update(horiz_metrics)
             return True, layer_metrics
-        
-        return False, {'reason': 'no_separation_detected'}
+
+        # Nothing triggered
+        return False, {"reason": "no_separation_detected", **horiz_metrics}
+
     
     def _filter_liquid_detections(self,
                                   detections: List[Dict[str, Any]],
