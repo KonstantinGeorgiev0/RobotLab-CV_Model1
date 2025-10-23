@@ -1,0 +1,7 @@
+file,label,points_detected,variance_from_baseline,std_dev_from_baseline,roughness,inter_segment_variance,max_segment_std,spectral_energy,dominant_frequency,curve_width,range_px,rms_deviation,y_variance_meta,rule_suggestion
+gel_10BA_1-2_vial00_report.json,gelled,349,201.6675,14.201,0.9015,151.9967,11.8144,12281653.7182,0.0029,348.0,48.5538,15.6015,201.6675,gelled_by_curve
+6493_pure_9day_50C_vial00_report.json,gelled,305,102.3723,10.1179,0.9013,54.6089,10.9207,4761590.5084,0.0033,304.0,30.7569,11.9426,102.3723,gelled_by_curve
+Day_1_12w%_Proglyde_DMM_vial00_report.json,stable,318,35.2998,5.9414,0.645,7.6105,9.0478,1784828.3574,0.0031,317.0,28.2509,6.2256,35.2998,ambiguous_curve_only
+Day_1_20w%_Proglyde_DMM_vial00_report.json,stable,303,3.4853,1.8669,0.4409,0.3969,3.6492,159991.4201,0.0033,302.0,20.1725,1.9298,3.4853,stable_candidate
+ps_50_1_vial00_report.json,phase_separated,428,32.5455,5.7049,0.8046,6.4897,6.7247,2980917.1996,0.0257,427.0,24.3518,6.0754,32.5455,ambiguous_curve_only
+PS_50%BA_1_cropped_vial00_report.json,phase_separated,362,7.943,2.8183,0.7665,1.6636,4.2376,520442.4889,0.0028,361.0,19.5,2.8859,7.943,stable_candidate
