@@ -33,9 +33,9 @@ PHASE_SEPARATION_THRESHOLDS = {
 
 # Turbidity analysis parameters
 TURBIDITY_PARAMS = {
-    'analysis_width': 100,          # Standard width for turbidity analysis
-    'analysis_height': 500,         # Standard height for turbidity analysis
-    'top_exclude_fraction': 0.25,   # Default top exclusion fraction
+    'analysis_width': 100,           # Standard width for turbidity analysis
+    'analysis_height': 500,          # Standard height for turbidity analysis
+    'top_exclude_fraction': 0.25,    # Default top exclusion fraction
     'bottom_exclude_fraction': 0.05, # Bottom exclusion fraction
     'gradient_threshold_sigma': 2.5, # Sigma multiplier for gradient threshold
     'gradient_threshold_min': 0.10,  # Minimum gradient threshold
@@ -47,6 +47,39 @@ REGION_EXCLUSION = {
     'top_fraction': 0.20,      # Exclude top %
     'bottom_fraction': 0.10,   # Exclude bottom %
     'enabled': True            # Toggle feature on/off
+}
+
+# Line detection parameters
+LINE_PARAMS = {
+    'min_line_length': 0.75,           # minimum line length for detection
+    'merge_threshold': 0.05,           # merge lines that are too close together
+    'vertical_bounds': (0.25, 0.80),   # normalized (top, bottom)
+    'horizontal_bounds': (0.03, 0.97), # normalized (left, right)
+    'search_offset_px': 30,            # vertical search offset around guide line (pixels)
+    'median_kernel': 9,                # median filter kernel size
+    'max_step_px': 3,                  # max step between points (pixels)
+}
+
+# Curve analysis thresholds
+CURVE_PARAMS = {
+    "gel_variance_thr": 80.0,           # variance threshold for gel detection
+    "stable_variance_thr": 50.0,        # variance threshold for stable detection
+    "std_dev_thr": 10.0,                # standard deviation threshold
+    "roughness_thr": 0.85,              # std of 2nd derivative, optional second guard
+    "inter_segment_variance": 40.0,     # inter segment variance
+    "min_points": 120,                  # require enough traced points
+    "min_line_length": 0.25,            # minimum line length for curve detection
+    "vertical_bounds": (0.30, 0.80),    # normalized (top, bottom)
+    "horizontal_bounds": (0.05, 0.95),  # normalized (left, right)
+    "search_offset_px": 30,             # vertical search offset around guide line (pixels)
+    "median_kernel": 9,                 # median filter kernel size
+    "max_step_px": 4                    # max step between points (pixels)
+}
+
+# Only air classification
+ONLY_AIR_CLASSIFICATION = {
+    "min_air_height_fraction": 0.6,         # height fraction for air classification
+    "min_horizontal_line_len_frac": 0.6,     # length fraction for horizontal line detection
 }
 
 # Visualization parameters

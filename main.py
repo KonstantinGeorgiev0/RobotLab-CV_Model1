@@ -63,6 +63,8 @@ class VialDetectionPipeline:
 
         # Initialize classifier
         self.classifier = VialStateClassifier(
+            use_line_detection=args.use_line_detection,
+            use_curved_line_detection=args.use_curved_line_detection,
             use_turbidity=args.use_turbidity,
             merge_boxes=args.merge_boxes,
             region_exclusion=region_exclusion
@@ -478,6 +480,10 @@ def parse_args():
                         help="Disable region exclusion")
     
     # Analysis options
+    parser.add_argument("--use-line-detection", action="store_true",
+                        help="Use line detection for phase separation")
+    parser.add_argument("--use-curved-line-detection", action="store_true",
+                        help="Use curved line detection for gel")
     parser.add_argument("--use-turbidity", action="store_true",
                        help="Use turbidity analysis for phase separation")
     parser.add_argument("--merge-boxes", action="store_true",
