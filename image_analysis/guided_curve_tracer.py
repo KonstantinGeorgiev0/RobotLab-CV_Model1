@@ -16,6 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from image_analysis.line_hv_detection import LineDetector
 from robotlab_utils.image_utils import extract_edges_for_curve_detection
+from config import CURVE_PARAMS
 
 
 class GuidedCurveTracer:
@@ -42,7 +43,7 @@ class GuidedCurveTracer:
         self.search_offset_px = search_offset_px
         self.median_kernel = median_kernel
         self.max_step_px = max_step_px
-        self.line_detector = LineDetector(min_line_length=0.3)
+        self.line_detector = LineDetector(min_line_length=CURVE_PARAMS.get("min_line_length", 0.25))
 
     def trace_curve(self,
                     img_bgr: np.ndarray,
@@ -62,24 +63,24 @@ class GuidedCurveTracer:
         """
         H, W = img_bgr.shape[:2]
 
-        # Step 1: Detect horizontal line if guide not provided
+        # Detect horizontal line if guide not provided
         if guide_y is None:
             guide_y = self._detect_guide_line(img_bgr, img_path)
 
         # Convert guide to pixel coordinates
         guide_y_px = int(guide_y * H)
 
-        # Step 2: Define search region
+        # Define search region
         x_min_px = int(self.horizontal_bounds[0] * W)
         x_max_px = int(self.horizontal_bounds[1] * W)
 
         y_min_search = max(0, guide_y_px - self.search_offset_px)
         y_max_search = min(H - 1, guide_y_px + self.search_offset_px)
 
-        # Step 3: Extract edges optimized for curved interface
+        # Extract edges optimized for curved interface
         edges = extract_edges_for_curve_detection(img_bgr)
 
-        # Step 4: Trace curve column by column
+        # Trace curve column by column
         xs, ys = self._trace_columns(
             edges,
             x_min_px, x_max_px,
@@ -87,13 +88,20 @@ class GuidedCurveTracer:
             guide_y_px
         )
 
-        # Step 5: Smooth and denoise
+        # Smooth and denoise
         ys_smooth = self._smooth_curve(ys)
         y_variance = np.var(ys_smooth)
+        deviations_from_guide = ys_smooth - guide_y_px
+        variance_from_baseline = np.var(deviations_from_guide)
+        std_dev_from_baseline = np.std(deviations_from_guide)
+        rms_deviation = np.sqrt(np.mean(deviations_from_guide ** 2))
 
         # Prepare metadata
         metadata = {
             'y_variance': float(y_variance),
+            'std_dev_from_baseline': float(std_dev_from_baseline),
+            'variance_from_baseline': float(variance_from_baseline),
+            'rms_deviation': float(rms_deviation),
             'guide_y_normalized': float(guide_y),
             'guide_y_px': guide_y_px,
             'search_region': {
@@ -114,7 +122,7 @@ class GuidedCurveTracer:
         Returns:
             Normalized y-position (0-1) of detected line
         """
-        H = img_bgr.shape[0]
+        # H = img_bgr.shape[0]
 
         # Use line detector with vertical bounds
         result = self.line_detector.detect(
@@ -123,12 +131,19 @@ class GuidedCurveTracer:
             bottom_exclusion=1.0 - self.vertical_bounds[1]
         )
 
-        # Get the topmost horizontal line (typically liquid-air interface)
+        # Get horizontal lines
         h_lines = result['horizontal_lines']['lines']
 
         if h_lines:
-            # Use the topmost line as guide
-            guide_y = min(line['y_position'] for line in h_lines)
+            # Use topmost line as guide
+            # guide_y = min(line['y_position'] for line in h_lines)
+
+            # Use longest line as guide
+            guide_y = max(h_lines, key=lambda line: line['x_length_frac'])['y_position']
+
+            # # Use line closest to center
+            # center_y = (self.vertical_bounds[0] + self.vertical_bounds[1]) / 2
+            # guide_y = min(h_lines, key=lambda line: abs(line['y_position'] - center_y))['y_position']
         else:
             # Fallback: use middle of vertical bounds
             guide_y = (self.vertical_bounds[0] + self.vertical_bounds[1]) / 2
@@ -148,7 +163,7 @@ class GuidedCurveTracer:
         Returns:
             Tuple of (x_array, y_array)
         """
-        H = edges.shape[0]
+        # H = edges.shape[0]
         xs = np.arange(x_min, x_max + 1, dtype=int)
         ys = []
 
@@ -203,16 +218,16 @@ class GuidedCurveTracer:
         Returns:
             Smoothed y-coordinates
         """
-        # Stage 1: Rolling median
+        # Rolling median
         ys_smooth = self._rolling_median(ys, self.median_kernel)
 
-        # Stage 2: Hampel filter (remove outliers)
+        # Hampel filter (remove outliers)
         ys_smooth = self._hampel_filter(ys_smooth, k=7, n_sigma=3.0)
 
-        # Stage 3: Remove short spikes
+        # Remove short spikes
         ys_smooth = self._remove_short_spikes(ys_smooth, max_run=3, jump_px=8)
 
-        # Stage 4: Enforce continuity
+        # Enforce continuity
         ys_smooth = self._enforce_continuity(ys_smooth, self.max_step_px)
 
         return ys_smooth

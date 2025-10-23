@@ -4,6 +4,8 @@ Detects both horizontal and vertical lines, with horizontal lines constrained to
 """
 
 import argparse
+import json
+
 import cv2
 import numpy as np
 from pathlib import Path
@@ -26,7 +28,7 @@ class HorizontalLine:
         return (self.x_start + self.x_end) / 2.0
 
     @property
-    def x_span(self) -> float:
+    def x_length_frac(self) -> float:
         return self.x_end - self.x_start
 
     def __repr__(self) -> str:
@@ -51,7 +53,7 @@ class VerticalLine:
         return (self.y_start + self.y_end) / 2.0
 
     @property
-    def y_span(self) -> float:
+    def y_length_frac(self) -> float:
         return self.y_end - self.y_start
 
     def __repr__(self) -> str:
@@ -144,7 +146,7 @@ class LineDetector:
         vertical_lines = self._analyze_vertical_lines(vertical_img, H, W)
         vertical_lines = self._merge_nearby_vertical_lines(vertical_lines)
         vertical_lines = [l for l in vertical_lines
-                         if l.y_span >= self.min_line_length
+                         if l.y_length_frac >= self.min_line_length
                          and l.strength >= self.min_line_strength]
         vertical_lines.sort(key=lambda l: l.x_position)
 
@@ -160,7 +162,7 @@ class LineDetector:
         )
         horizontal_lines = self._merge_nearby_horizontal_lines(horizontal_lines)
         horizontal_lines = [l for l in horizontal_lines
-                           if l.x_span >= self.min_line_length
+                           if l.x_length_frac >= self.min_line_length
                            and l.strength >= self.min_line_strength]
         horizontal_lines.sort(key=lambda l: l.y_position)
 
@@ -223,7 +225,7 @@ class LineDetector:
         if line_type == 'horizontal':
             # Calculate exclusion zones
             top_idx = int(height * top_exclusion)
-            bottom_idx = int(height * (1.0 - bottom_exclusion))
+            bottom_idx = int(height * bottom_exclusion)
             top_idx = max(0, min(top_idx, height))
             bottom_idx = max(0, min(bottom_idx, height))
 
@@ -457,7 +459,7 @@ class LineDetector:
                     'max': float(max(y_positions)),
                     'range': float(max(y_positions) - min(y_positions))
                 },
-                'average_line_length': float(np.mean([l.x_span for l in lines])),
+                'average_line_length': float(np.mean([l.x_length_frac for l in lines])),
                 'average_line_strength': float(np.mean([l.strength for l in lines]))
             }
 
@@ -469,7 +471,7 @@ class LineDetector:
                     'max': float(max(x_positions)),
                     'range': float(max(x_positions) - min(x_positions))
                 },
-                'average_line_length': float(np.mean([l.y_span for l in lines])),
+                'average_line_length': float(np.mean([l.y_length_frac for l in lines])),
                 'average_line_strength': float(np.mean([l.strength for l in lines]))
             }
 
@@ -485,7 +487,7 @@ class LineDetector:
                 'x_start': float(line.x_start),
                 'x_end': float(line.x_end),
                 'x_center': float(line.x_center),
-                'y_span': float(line.x_span),
+                'x_length_frac': float(line.x_length_frac),
                 'thickness': int(line.thickness),
                 'strength': float(line.strength)
             }
@@ -497,7 +499,7 @@ class LineDetector:
                 'y_start': float(line.y_start),
                 'y_end': float(line.y_end),
                 'y_center': float(line.y_center),
-                'y_span': float(line.y_span),
+                'y_length_frac': float(line.y_length_frac),
                 'thickness': int(line.thickness),
                 'strength': float(line.strength)
             }
@@ -528,7 +530,7 @@ class LineDetector:
             top_line_y = int(top_exclusion * H)
             cv2.line(overlay, (0, top_line_y), (W, top_line_y), (255, 0, 0), 2)
         if bottom_exclusion > 0:
-            bottom_line_y = int((1.0 - bottom_exclusion) * H)
+            bottom_line_y = int(bottom_exclusion * H)
             cv2.line(overlay, (0, bottom_line_y), (W, bottom_line_y), (255, 0, 0), 2)
 
         # Draw vertical lines (red)
@@ -577,77 +579,6 @@ class LineDetector:
         cv2.imwrite(str(output_path), output)
         return output_path
 
-#
-# def _edge_map_for_walls(img_bgr):
-#     """Crisp edges for rigid walls (NO dilation/closing)."""
-#     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-#     gray = cv2.GaussianBlur(gray, (3,3), 0)
-#     # higher thresholds so we keep the hard outer contour, drop faint interior streaks
-#     edges = cv2.Canny(gray, 80, 180)
-#     return edges
-#
-# def detect_vial_wall_xcoords_by_components(
-#         img_bgr,
-#         left_strip_frac: float = 0.15,    # search only in left/right border strips
-#         right_strip_frac: float = 0.15,
-#         min_vert_span_frac: float = 0.45, # require tall components
-#         y_band: tuple[int,int] | None = None
-#     ) -> tuple[int,int]:
-#     """
-#     Returns (x_left, x_right) — the outer wall x's in pixels.
-#
-#     Approach: connected components in left/right strips of a crisp edge map.
-#     Picks the component with the largest vertical span that's nearest the border
-#     (i.e., smallest x on the left, largest x on the right).
-#     """
-#     H, W = img_bgr.shape[:2]
-#     edges = _edge_map_for_walls(img_bgr)
-#
-#     if y_band is None:
-#         y0, y1 = int(0.12*H), int(0.90*H)   # ignore cap and bottom bulb
-#     else:
-#         y0, y1 = max(0, y_band[0]), min(H-1, y_band[1])
-#
-#     band = np.zeros_like(edges)
-#     band[y0:y1+1, :] = 255
-#     edges = cv2.bitwise_and(edges, band)
-#
-#     Lw = int(left_strip_frac * W)
-#     Rw = int(right_strip_frac * W)
-#
-#     left_mask  = np.zeros_like(edges);  left_mask[:, :max(1,Lw)]  = 255
-#     right_mask = np.zeros_like(edges);  right_mask[:, W-max(1,Rw):] = 255
-#
-#     left_edges  = cv2.bitwise_and(edges, left_mask)
-#     right_edges = cv2.bitwise_and(edges, right_mask)
-#
-#     def pick_side(binary, is_left=True):
-#         # close a bit to connect broken wall edges
-#         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE,
-#                                   cv2.getStructuringElement(cv2.MORPH_RECT, (3,9)))
-#         n, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
-#         best_x = None; best_h = 0
-#         for i in range(1, n):
-#             x, y, w, h, area = stats[i]
-#             if h < int(min_vert_span_frac*H):
-#                 continue
-#             x_mid = x + w//2
-#             if is_left:
-#                 if (best_x is None) or (x_mid < best_x) or (x_mid == best_x and h > best_h):
-#                     best_x, best_h = x_mid, h
-#             else:
-#                 if (best_x is None) or (x_mid > best_x) or (x_mid == best_x and h > best_h):
-#                     best_x, best_h = x_mid, h
-#         if best_x is None:
-#             # fallback to strip edge
-#             return 0 if is_left else W-1
-#         return int(best_x)
-#
-#     x_left  = pick_side(left_edges,  is_left=True)
-#     x_right = pick_side(right_edges, is_left=False)
-#
-#     return x_left, x_right
-
 
 def main():
     ap = argparse.ArgumentParser(
@@ -658,7 +589,7 @@ def main():
                    help="Output directory")
     ap.add_argument("--top-exclusion", type=float, default=0.2,
                    help="Fraction of top to exclude (0-1)")
-    ap.add_argument("--bottom-exclusion", type=float, default=0.2,
+    ap.add_argument("--bottom-exclusion", type=float, default=0.8,
                    help="Fraction of bottom to exclude (0-1)")
     ap.add_argument("--min-line-length", type=float, default=0.3,
                    help="Minimum line length as fraction")
@@ -704,7 +635,7 @@ def main():
         for i, line in enumerate(result['vertical_lines']['lines']):
             print(f"  V{i+1}: x={line['x_position']:.3f}, "
                   f"y=[{line['y_start']:.3f}, {line['y_end']:.3f}], "
-                  f"strength={line['strength']:.3f}")
+                  f"line_length={line['y_length_frac']:.3f}")
 
     print("\n" + "="*60)
     print("HORIZONTAL LINES (Phase Boundaries)")
@@ -715,7 +646,14 @@ def main():
         for i, line in enumerate(result['horizontal_lines']['lines']):
             print(f"  H{i+1}: y={line['y_position']:.3f}, "
                   f"x=[{line['x_start']:.3f}, {line['x_end']:.3f}], "
-                  f"strength={line['strength']:.3f}")
+                  f"line_length={line['x_length_frac']:.3f}")
+
+    # Create summary json file
+    summary_path = outdir / f"{image_path.stem}_summary.json"
+    with open(summary_path, "w") as f:
+        json.dump(result, f, indent=2)
+
+    print(f"\nSummary saved to: {summary_path}")
 
     # Create visualization
     viz_path = outdir / f"{image_path.stem}_lines.png"

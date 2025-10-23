@@ -165,6 +165,29 @@ def visualize_hough_lines(img, segments, wiggle, output_path):
     cv2.imwrite(str(output_path), overlay)
 
 
+def calculate_segment_variance(segments, baseline_y, image_width):
+    """Calculate variance of segments from baseline."""
+    if not segments:
+        return 0.0
+
+    y_positions = []
+    weights = []
+
+    for (x1, y1, x2, y2) in segments:
+        y_mid = (y1 + y2) / 2.0
+        length = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        y_positions.append(y_mid)
+        weights.append(length)
+
+    y_positions = np.array(y_positions)
+    weights = np.array(weights)
+
+    deviations = y_positions - baseline_y
+    variance = np.average(deviations ** 2, weights=weights)
+
+    return variance
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Detect horizontal lines using Probabilistic Hough Transform"
