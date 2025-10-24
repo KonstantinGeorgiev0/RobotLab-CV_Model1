@@ -291,8 +291,8 @@ class VialDetectionPipeline:
         # viz_dir.mkdir(parents=True, exist_ok=True)
 
         # Separate directory for filtered visualizations
-        filtered_viz_dir = liquid_out_dir / "visualizations_filtered"
-        if self.args.save_viz and not self.args.no_region_exclusion:
+        filtered_viz_dir = liquid_out_dir / "visualizations"
+        if self.args.save_viz:
             filtered_viz_dir.mkdir(parents=True, exist_ok=True)
 
         labels_dir = liquid_out_dir / "labels"

@@ -225,7 +225,7 @@ class LineDetector:
         if line_type == 'horizontal':
             # Calculate exclusion zones
             top_idx = int(height * top_exclusion)
-            bottom_idx = int(height * bottom_exclusion)
+            bottom_idx = int(height * (1 - bottom_exclusion))
             top_idx = max(0, min(top_idx, height))
             bottom_idx = max(0, min(bottom_idx, height))
 
@@ -530,7 +530,7 @@ class LineDetector:
             top_line_y = int(top_exclusion * H)
             cv2.line(overlay, (0, top_line_y), (W, top_line_y), (255, 0, 0), 2)
         if bottom_exclusion > 0:
-            bottom_line_y = int(bottom_exclusion * H)
+            bottom_line_y = int((1 - bottom_exclusion) * H)
             cv2.line(overlay, (0, bottom_line_y), (W, bottom_line_y), (255, 0, 0), 2)
 
         # Draw vertical lines (red)
