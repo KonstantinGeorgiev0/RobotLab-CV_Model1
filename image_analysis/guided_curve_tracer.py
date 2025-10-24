@@ -15,6 +15,10 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from image_analysis.line_hv_detection import LineDetector
+from robotlab_utils.image_utils import (
+    build_curve_edges_from_guide,
+    compute_search_region_from_guide,
+)
 from config import CURVE_PARAMS
 
 
@@ -48,7 +52,8 @@ class GuidedCurveTracer:
     def trace_curve(self,
                     img_bgr: np.ndarray,
                     img_path: Path,
-                    guide_y: Optional[float] = None) -> Tuple[np.ndarray, np.ndarray, dict]:
+                    guide_y: Optional[float] = None,
+                    save_debug: Optional[bool] = False) -> Tuple[np.ndarray, np.ndarray, dict]:
         """
         Trace curved liquid-air interface.
 
@@ -68,37 +73,25 @@ class GuidedCurveTracer:
             guide_y = self._detect_guide_line(img_bgr, img_path, H, W)
 
         # Convert guide to pixel coordinates
-        guide_y_px = int(guide_y * H)
+        guide_y_px = int(np.clip(guide_y, 0.0, 1.0) * H)
 
-        # Define search region
-        x_min_px = int(self.horizontal_bounds[0] * W)
-        x_max_px = int(self.horizontal_bounds[1] * W)
+        # Build edges and get region via image_utils
+        edges, thresh, (x_min_px, x_max_px, y_min_search, y_max_search) = build_curve_edges_from_guide(
+            img_bgr=img_bgr,
+            guide_y_px=guide_y_px,
+            horizontal_bounds=self.horizontal_bounds,
+            search_offset_frac=self.search_offset_frac,
+            gaussian_ksize=(3, 3),
+            sobel_ksize=5,
+            equalize_hist=True
+        )
 
-        # Define search region
-        search_offset_px = int(self.search_offset_frac * H)
-        y_min_search = max(0, guide_y_px - search_offset_px)
-        y_max_search = min(H - 1, guide_y_px + search_offset_px)
-
-        # Extract edges
-        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-        # Define search region
-        search_roi = gray[y_min_search:y_max_search + 1, x_min_px:x_max_px + 1]
-        # Apply blur for noise reduction
-        search_roi = cv2.GaussianBlur(search_roi, (3, 3), 0)
-        # Contrast for low-light vials
-        search_roi = cv2.equalizeHist(search_roi)
-        # Vertical gradient using Sobel operator
-        sobel_y = cv2.Sobel(search_roi, cv2.CV_64F, 0, 1, ksize=5)
-        edges = np.abs(sobel_y)  # Magnitude
-        edges = (edges / edges.max() * 255).astype(np.uint8) if edges.max() > 0 else edges.astype(np.uint8)  # Normalize
-        thresh = cv2.threshold(edges, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-
-        # save edges for debugging
-        cv2.imwrite(str(img_path.parent.parent.parent / Path(str("image_analysis")) / Path(str("guided_curve_results"))
-                        / "edges" / f'edges_{img_path.stem}.png'), edges)
-        # save image with detected edges
-        cv2.imwrite(str(img_path.parent.parent.parent / Path(str("image_analysis")) / Path(str("guided_curve_results"))
-                        / "edges" / f'edges_detected_{img_path.stem}.png'), cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR))
+        # debug saves
+        if save_debug:
+            debug_dir = img_path.parent.parent.parent / Path("image_analysis") / Path("guided_curve_results")
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(debug_dir / f'edges_{img_path.stem}.png'), edges)
+            cv2.imwrite(str(debug_dir / f'edges_detected_{img_path.stem}.png'), cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR))
 
         # Trace curve column by column
         xs, ys = self._trace_columns_topmost_prefer(
@@ -157,8 +150,8 @@ class GuidedCurveTracer:
 
         if h_lines:
             # Weighted average of lines to get guide y
-            total_weight = sum(l.x_length_frac for l in h_lines)
-            guide_y = sum(l.x_length_frac * l.y_position for l in h_lines) / total_weight if total_weight > 0 \
+            total_weight = sum(l['x_length_frac'] for l in h_lines)
+            guide_y = sum(l['x_length_frac'] * l['y_position'] for l in h_lines) / total_weight if total_weight > 0 \
                 else (self.vertical_bounds[0] + self.vertical_bounds[1]) / 2
 
         else:

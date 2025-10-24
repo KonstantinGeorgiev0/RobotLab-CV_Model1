@@ -35,6 +35,7 @@ class CurveStatistics:
     variance_from_baseline: float
     std_dev_from_baseline: float
     rms_deviation: float
+    inter_segment_variance: float
     mad: float  # Median Absolute Deviation
 
     # Distribution statistics
@@ -78,6 +79,7 @@ class CurveAnalyzer:
             xs: np.ndarray,
             ys: np.ndarray,
             baseline_y: Optional[float] = None,
+            inter_segment_variance: Optional[float] = None,
             window_size: int = 20
     ) -> CurveStatistics:
         """
@@ -144,6 +146,7 @@ class CurveAnalyzer:
             variance_from_baseline=variance_from_baseline,
             std_dev_from_baseline=std_dev_from_baseline,
             rms_deviation=rms_deviation,
+            inter_segment_variance=inter_segment_variance if inter_segment_variance is not None else 0.0,
             mad=mad,
             skewness=skewness,
             kurtosis=kurtosis,
@@ -289,7 +292,7 @@ class CurveAnalyzer:
         return CurveStatistics(
             mean_y=0.0, median_y=0.0, std_dev=0.0, variance=0.0, range=0.0,
             baseline_y=0.0, variance_from_baseline=0.0, std_dev_from_baseline=0.0,
-            rms_deviation=0.0, mad=0.0, skewness=0.0, kurtosis=0.0,
+            rms_deviation=0.0, inter_segment_variance=0.0, mad=0.0, skewness=0.0, kurtosis=0.0,
             linear_trend_slope=0.0, linear_trend_r_squared=0.0,
             residual_variance=0.0, detrended_std=0.0, roughness=0.0,
             local_variance_mean=0.0, local_variance_std=0.0,
@@ -670,7 +673,7 @@ def main():
     print(f"Image: {img_path.name}")
     print(f"Size: {W}x{H}")
 
-    # Initialize tracer
+    # Initializations
     tracer = GuidedCurveTracer(
         vertical_bounds=(args.top, args.bottom),
         horizontal_bounds=(args.left, args.right),
@@ -678,12 +681,33 @@ def main():
         median_kernel=args.median_k,
         max_step_px=args.max_step
     )
+    xs, ys, curve_metadata = tracer.trace_curve(img, img_path, guide_y=args.guide_y)
+
+    analyzer = CurveAnalyzer()
+    segments = analyzer.segment_curve(
+        xs=np.asarray(xs, dtype=np.float32),
+        ys=np.asarray(ys, dtype=np.float32),
+        num_segments=args.num_segments,
+    )
+
+    curve_stats = analyzer.compute_comprehensive_statistics(
+        xs=np.asarray(xs, dtype=np.float32),
+        ys=np.asarray(ys, dtype=np.float32),
+        baseline_y=None,
+        inter_segment_variance=segments['inter_segment_variance'],
+        window_size=args.window_size,
+    )
+
+    anomalies = analyzer.detect_anomalies(
+        xs=np.asarray(xs, dtype=np.float32),
+        ys=np.asarray(ys, dtype=np.float32),
+        threshold_sigma=args.anomaly_threshold,
+    )
 
     # Trace curve
     print(f"\n{'=' * 70}")
     print("STEP 1: CURVE DETECTION")
     print(f"{'=' * 70}")
-    xs, ys, curve_metadata = tracer.trace_curve(img, img_path, guide_y=args.guide_y)
     print(f"Detected {len(xs)} points")
     print(f"Guide Y: {curve_metadata.get('guide_y_normalized', float('nan')):.3f} "
           f"({curve_metadata.get('guide_y_px', 'N/A')} px)")
@@ -704,7 +728,7 @@ def main():
             "tracer_params": {
                 "vertical_bounds": [args.top, args.bottom],
                 "horizontal_bounds": [args.left, args.right],
-                "search_offset_px": args.search_offset,
+                "search_offset_frac": args.search_offset,
                 "median_kernel": args.median_k,
                 "max_step_px": args.max_step,
                 "guide_y": args.guide_y,
@@ -722,13 +746,6 @@ def main():
     print(f"\n{'=' * 70}")
     print("STEP 2: COMPREHENSIVE STATISTICS")
     print(f"{'=' * 70}")
-    analyzer = CurveAnalyzer()
-    curve_stats = analyzer.compute_comprehensive_statistics(
-        xs=np.asarray(xs, dtype=np.float32),
-        ys=np.asarray(ys, dtype=np.float32),
-        baseline_y=None,
-        window_size=args.window_size,
-    )
     print(f"Variance (from baseline): {curve_stats.variance_from_baseline:.4f}")
     print(f"Std Dev (from baseline): {curve_stats.std_dev_from_baseline:.3f} px")
     print(f"Smoothness score: {analyzer.compute_smoothness_score(np.asarray(ys, dtype=np.float32)):.1f}/100")
@@ -738,11 +755,7 @@ def main():
     print(f"\n{'=' * 70}")
     print("STEP 3: ANOMALY DETECTION")
     print(f"{'=' * 70}")
-    anomalies = analyzer.detect_anomalies(
-        xs=np.asarray(xs, dtype=np.float32),
-        ys=np.asarray(ys, dtype=np.float32),
-        threshold_sigma=args.anomaly_threshold,
-    )
+
     print(f"Anomalies detected: {anomalies['num_anomalies']}")
     if anomalies['num_anomalies'] > 0:
         print(f"Max deviation: {anomalies['max_deviation']:.2f} px")
@@ -752,11 +765,6 @@ def main():
     print(f"\n{'=' * 70}")
     print("STEP 4: SEGMENT ANALYSIS")
     print(f"{'=' * 70}")
-    segments = analyzer.segment_curve(
-        xs=np.asarray(xs, dtype=np.float32),
-        ys=np.asarray(ys, dtype=np.float32),
-        num_segments=args.num_segments,
-    )
     print(f"Segments: {segments['num_segments']}")
     print(f"Inter-segment variance: {segments['inter_segment_variance']:.4f}")
     print(f"Max segment std: {segments['max_segment_std']:.3f}")
@@ -784,7 +792,7 @@ def main():
         "tracer_params": {
             "vertical_bounds": [args.top, args.bottom],
             "horizontal_bounds": [args.left, args.right],
-            "search_offset_px": args.search_offset,
+            "search_offset_frac": args.search_offset,
             "median_kernel": args.median_k,
             "max_step_px": args.max_step,
             "guide_y": args.guide_y,
