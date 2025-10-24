@@ -24,24 +24,24 @@ def run_curve_metrics(crop_path: Path) -> Dict[str, Any]:
     if img is None:
         return {"gelled_by_curve": False, "stats": {}, "curve_metadata": {}, "reason": "image_load_failed"}
 
-    # H, W = img.shape[:2]
     params = CURVE_PARAMS
 
     tracer = GuidedCurveTracer(
         vertical_bounds=params.get("vertical_bounds", (0.30, 0.80)),
         horizontal_bounds=params.get("horizontal_bounds", (0.05, 0.95)),
-        search_offset_px=params.get("search_offset_px", 30),
+        search_offset_frac=params.get("search_offset_frac", 0.10),
         median_kernel=params.get("median_kernel", 9),
         max_step_px=params.get("max_step_px", 4),
     )
 
     xs, ys, meta = tracer.trace_curve(img, crop_path, guide_y=None)
-    if len(xs) < params.get("min_points", 50):
+    min_pts = params.get("min_points", 50)
+    if len(xs) < min_pts:
         return {
             "gelled_by_curve": False,
             "stats": {},
             "curve_metadata": meta,
-            "reason": f"insufficient_points:{len(xs)}"
+            "reason": f"insufficient_points:{len(xs)}<{min_pts}"
         }
 
     xs_np = np.asarray(xs, np.float32)
@@ -51,20 +51,45 @@ def run_curve_metrics(crop_path: Path) -> Dict[str, Any]:
     stats = analyzer.compute_comprehensive_statistics(
         xs=xs_np, ys=ys_np, baseline_y=None, window_size=20
     )
-    # decision: variance from baseline
-    var_thr = params.get("gel_variance_thr", 80.0)
-    std_dev_thr = params.get("std_dev_thr", 10.0)
-    inter_segment_variance = params.get("inter_segment_variance", 40.0)
-    rough_thr = params.get("roughness_thr", 0.85)
 
-    gelled = (stats.variance_from_baseline >= var_thr)
+    # Thresholds
+    yvar_thr = params.get("y_variance_thr", 100.0)                    # strong separator
+    std_dev_thr = params.get("std_dev_thr", 10.0)                     # secondary
+    inter_seg_thr = params.get("inter_segment_variance_thr", 80.0)    # spatial stability
+    loc_var_mean_thr = params.get("local_variance_mean_thr", 30.0)    # micro-waviness
+    spec_energy_thr = params.get("spectral_energy_thr", 5_000_000.0)  # frequency content
+    votes_needed = params.get("votes_needed", 2)                      # majority of rules
+
+    # Collect metrics safely
+    y_variance = getattr(stats, "variance", np.nan)
+    std_from_base = getattr(stats, "std_dev_from_baseline", np.nan)
+    inter_segment_variance = getattr(stats, "inter_segment_variance", np.nan)
+    local_variance_mean = getattr(stats, "local_variance_mean", np.nan)
+    spectral_energy = getattr(stats, "spectral_energy", np.nan)
+
+    # Rules & votes
+    rule_hits = []
+
+    if not np.isnan(y_variance) and y_variance >= yvar_thr:
+        rule_hits.append(f"y_variance {y_variance:.2f} ≥ {yvar_thr}")
+    if not np.isnan(std_from_base) and std_from_base >= std_dev_thr:
+        rule_hits.append(f"std_dev {std_from_base:.2f} ≥ {std_dev_thr}")
+    if not np.isnan(inter_segment_variance) and inter_segment_variance >= inter_seg_thr:
+        rule_hits.append(f"inter_segment_variance {inter_segment_variance:.2f} ≥ {inter_seg_thr}")
+    if not np.isnan(local_variance_mean) and local_variance_mean >= loc_var_mean_thr:
+        rule_hits.append(f"local_variance_mean {local_variance_mean:.2f} ≥ {loc_var_mean_thr}")
+    if not np.isnan(spectral_energy) and spectral_energy >= spec_energy_thr:
+        rule_hits.append(f"spectral_energy {spectral_energy:.2e} ≥ {spec_energy_thr:.2e}")
+
+    gelled = (len(rule_hits) >= votes_needed)
+
+    reason = (
+        "gel" if gelled else "no_gel"
+    ) + " | hits: " + (", ".join(rule_hits) if rule_hits else "none")
 
     return {
         "gelled_by_curve": bool(gelled),
         "stats": {k: getattr(stats, k) for k in stats.__dataclass_fields__.keys()},
         "curve_metadata": meta,
-        "reason": f"variance {stats.variance_from_baseline:.2f} > {var_thr} threshold, "
-                  f"std_dev {stats.std_dev_from_baseline:.2f} > {std_dev_thr} threshold, "
-                  f"inter_segment_variance {stats.inter_segment_variance:.2f} > {inter_segment_variance} threshold, "
-                  f"roughness {stats.roughness:.2f} > {rough_thr} threshold" if gelled else "no curve"
+        "reason": reason
     }
