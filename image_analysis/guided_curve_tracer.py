@@ -9,13 +9,12 @@ from pathlib import Path
 import numpy as np
 import cv2
 from typing import Optional, Tuple
+from scipy.signal import find_peaks
 
-# Import existing modules
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from image_analysis.line_hv_detection import LineDetector
-from robotlab_utils.image_utils import extract_edges_for_curve_detection
 from config import CURVE_PARAMS
 
 
@@ -25,22 +24,23 @@ class GuidedCurveTracer:
     def __init__(self,
                  vertical_bounds: Tuple[float, float] = (0.20, 0.80),
                  horizontal_bounds: Tuple[float, float] = (0.05, 0.95),
-                 search_offset_px: int = 30,
+                 search_offset_frac: float = 0.10,
                  median_kernel: int = 9,
-                 max_step_px: int = 4):
+                 max_step_px: int = 4,
+                 ):
         """
         Initialize guided curve tracer.
 
         Args:
             vertical_bounds: (top_frac, bottom_frac) - fraction of image height
             horizontal_bounds: (left_frac, right_frac) - fraction of image width
-            search_offset_px: Vertical offset around detected horizontal line to search
+            search_offset_frac: Vertical offset around detected horizontal line to search
             median_kernel: Kernel size for median smoothing
             max_step_px: Maximum allowed step between adjacent points
         """
         self.vertical_bounds = vertical_bounds
         self.horizontal_bounds = horizontal_bounds
-        self.search_offset_px = search_offset_px
+        self.search_offset_frac = search_offset_frac
         self.median_kernel = median_kernel
         self.max_step_px = max_step_px
         self.line_detector = LineDetector(min_line_length=CURVE_PARAMS.get("min_line_length", 0.25))
@@ -65,7 +65,7 @@ class GuidedCurveTracer:
 
         # Detect horizontal line if guide not provided
         if guide_y is None:
-            guide_y = self._detect_guide_line(img_bgr, img_path)
+            guide_y = self._detect_guide_line(img_bgr, img_path, H, W)
 
         # Convert guide to pixel coordinates
         guide_y_px = int(guide_y * H)
@@ -74,14 +74,34 @@ class GuidedCurveTracer:
         x_min_px = int(self.horizontal_bounds[0] * W)
         x_max_px = int(self.horizontal_bounds[1] * W)
 
-        y_min_search = max(0, guide_y_px - self.search_offset_px)
-        y_max_search = min(H - 1, guide_y_px + self.search_offset_px)
+        # Define search region
+        search_offset_px = int(self.search_offset_frac * H)
+        y_min_search = max(0, guide_y_px - search_offset_px)
+        y_max_search = min(H - 1, guide_y_px + search_offset_px)
 
-        # Extract edges optimized for curved interface
-        edges = extract_edges_for_curve_detection(img_bgr)
+        # Extract edges
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        # Define search region
+        search_roi = gray[y_min_search:y_max_search + 1, x_min_px:x_max_px + 1]
+        # Apply blur for noise reduction
+        search_roi = cv2.GaussianBlur(search_roi, (3, 3), 0)
+        # Contrast for low-light vials
+        search_roi = cv2.equalizeHist(search_roi)
+        # Vertical gradient using Sobel operator
+        sobel_y = cv2.Sobel(search_roi, cv2.CV_64F, 0, 1, ksize=5)
+        edges = np.abs(sobel_y)  # Magnitude
+        edges = (edges / edges.max() * 255).astype(np.uint8) if edges.max() > 0 else edges.astype(np.uint8)  # Normalize
+        thresh = cv2.threshold(edges, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+
+        # save edges for debugging
+        cv2.imwrite(str(img_path.parent.parent.parent / Path(str("image_analysis")) / Path(str("guided_curve_results"))
+                        / "edges" / f'edges_{img_path.stem}.png'), edges)
+        # save image with detected edges
+        cv2.imwrite(str(img_path.parent.parent.parent / Path(str("image_analysis")) / Path(str("guided_curve_results"))
+                        / "edges" / f'edges_detected_{img_path.stem}.png'), cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR))
 
         # Trace curve column by column
-        xs, ys = self._trace_columns(
+        xs, ys = self._trace_columns_topmost_prefer(
             edges,
             x_min_px, x_max_px,
             y_min_search, y_max_search,
@@ -115,7 +135,8 @@ class GuidedCurveTracer:
 
         return xs, ys_smooth, metadata
 
-    def _detect_guide_line(self, img_bgr: np.ndarray, img_path: Path) -> float:
+
+    def _detect_guide_line(self, img_bgr: np.ndarray, img_path: Path, height: int, width:int) -> float:
         """
         Detect horizontal line to guide curve search.
 
@@ -135,22 +156,174 @@ class GuidedCurveTracer:
         h_lines = result['horizontal_lines']['lines']
 
         if h_lines:
-            # Use topmost line as guide
-            # guide_y = min(line['y_position'] for line in h_lines)
+            # Weighted average of lines to get guide y
+            total_weight = sum(l.x_length_frac for l in h_lines)
+            guide_y = sum(l.x_length_frac * l.y_position for l in h_lines) / total_weight if total_weight > 0 \
+                else (self.vertical_bounds[0] + self.vertical_bounds[1]) / 2
 
-            # Use longest line as guide
-            guide_y = max(h_lines, key=lambda line: line['x_length_frac'])['y_position']
-
-            # # Use line closest to center
-            # center_y = (self.vertical_bounds[0] + self.vertical_bounds[1]) / 2
-            # guide_y = min(h_lines, key=lambda line: abs(line['y_position'] - center_y))['y_position']
         else:
-            # Fallback: use middle of vertical bounds
-            guide_y = (self.vertical_bounds[0] + self.vertical_bounds[1]) / 2
+            # scan central column for max gradient / strongest transition
+            gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+            center_x = width // 2
+            col_grad = cv2.Sobel(gray[:, center_x], cv2.CV_64F, 0, 1, ksize=5)
+            y_min_px = int(self.vertical_bounds[0] * height)
+            y_max_px = int(self.vertical_bounds[1] * height)
+            guide_y_px = y_min_px + np.argmax(np.abs(col_grad[y_min_px:y_max_px]))
+            guide_y = guide_y_px / height
 
         return guide_y
 
-    def _trace_columns(self,
+    def _trace_columns_smoother(self,
+                       edges: np.ndarray,
+                       x_min: int,
+                       x_max: int,
+                       y_min: int,
+                       y_max: int,
+                       guide_y: int) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Trace curve by finding edge points in each column and resulting in smoother curved lines.
+
+        Returns:
+            Tuple of (x_array, y_array)
+        """
+        search_height = y_max - y_min + 1
+        if search_height <= 0:
+            return np.array([]), np.array([])
+
+        xs = np.arange(x_min, x_max + 1, dtype=int)
+        ys = np.full(len(xs), float(guide_y), dtype=np.float32)  # Default to guide
+
+        # Gaussian weights
+        y_range = np.arange(y_min, y_max + 1)
+        sigma = search_height / 4.0  # Balanced sigma
+        weights = np.exp(-0.5 * ((y_range - guide_y) / sigma) ** 2)
+
+        min_strength = 5  # Ignore very weak pixels
+
+        for i, x in enumerate(xs):
+            col = edges[:, x - x_min].astype(np.float32)  # Magnitude for scoring
+
+            # Find candidate edges
+            edge_indices = np.flatnonzero(col > min_strength)
+            if len(edge_indices) == 0:
+                continue
+
+            # Scores
+            scores = col[edge_indices] * weights[edge_indices]
+
+            if len(edge_indices) <= 3:
+                # Pick strongest scored
+                best_idx = np.argmax(scores)
+                y_pick = y_min + edge_indices[best_idx]
+            else:
+                # Weighted centroid
+                weighted_sum = np.sum(scores * (y_min + edge_indices))
+                total_weight = np.sum(scores) + 1e-6
+                y_pick = weighted_sum / total_weight
+
+            ys[i] = y_pick
+
+        return xs, ys
+
+    def _trace_columns_topmost_prefer(self,
+                       edges: np.ndarray,
+                       x_min: int,
+                       x_max: int,
+                       y_min: int,
+                       y_max: int,
+                       guide_y: int) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Trace curve by finding edge points in each column, preferring topmost strong edges when multiple distant ones exist.
+
+        Returns:
+            Tuple of (x_array, y_array)
+        """
+        search_height = y_max - y_min + 1
+        if search_height <= 0:
+            return np.array([]), np.array([])
+
+        xs = np.arange(x_min, x_max + 1, dtype=int)
+        ys = np.full(len(xs), float(guide_y), dtype=np.float32)  # Default to guide
+
+        # Gaussian weights
+        y_range = np.arange(y_min, y_max + 1)
+        sigma = search_height / 4.0  # Balanced sigma
+        weights = np.exp(-0.5 * ((y_range - guide_y) / sigma) ** 2)
+
+        min_strength = 50  # Minimum peak height
+        min_distance = 3  # Minimum distance between peaks in px
+        separation_thresh = 10  # px threshold for 'distant'
+        strength_ratio_thresh = 1.5  # If max/min >= this, not similar
+
+        for i, x in enumerate(xs):
+            col = edges[:, x - x_min].astype(np.float32)  # Magnitude for peak detection
+
+            # Find distinct peaks
+            peaks, properties = find_peaks(col, height=min_strength, distance=min_distance)
+            if len(peaks) == 0:
+                continue  # Keep guide_y
+
+            peak_heights = properties['peak_heights']
+
+            # Sort by y-position ascending
+            sorted_idx = np.argsort(peaks)
+            sorted_peaks = peaks[sorted_idx]
+            sorted_heights = peak_heights[sorted_idx]
+
+            # Group close peaks
+            groups = []
+            current_group_peaks = [sorted_peaks[0]]
+            current_group_heights = [sorted_heights[0]]
+            for k in range(1, len(sorted_peaks)):
+                delta_y = sorted_peaks[k] - sorted_peaks[k - 1]
+                if delta_y <= separation_thresh:
+                    current_group_peaks.append(sorted_peaks[k])
+                    current_group_heights.append(sorted_heights[k])
+                else:
+                    # End current group
+                    group_top_y = min(current_group_peaks)
+                    group_max_h = max(current_group_heights)
+                    groups.append((group_top_y, group_max_h))
+                    current_group_peaks = [sorted_peaks[k]]
+                    current_group_heights = [sorted_heights[k]]
+
+            # Add last group
+            if current_group_peaks:
+                group_top_y = min(current_group_peaks)
+                group_max_h = max(current_group_heights)
+                groups.append((group_top_y, group_max_h))
+
+            # filter distant groups if similar strength
+            keep_groups = [groups[0]]  # Start with top group
+            j = 0
+            for k in range(1, len(groups)):
+                delta_y = groups[k][0] - groups[j][0]
+                max_h = max(groups[k][1], groups[j][1])
+                min_h = min(groups[k][1], groups[j][1])
+                ratio = max_h / min_h
+
+                if delta_y > separation_thresh and ratio < strength_ratio_thresh:
+                    # Distant and similar
+                    pass
+                else:
+                    # Keep
+                    keep_groups.append(groups[k])
+                    j = k
+
+            # score kept groups
+            if keep_groups:
+                group_ys = [g[0] for g in keep_groups]
+                group_hs = [g[1] for g in keep_groups]
+                # weights indexed by relative y
+                scores = [h * weights[y + y_min - y_min] for y, h in zip(group_ys, group_hs)]  # y is relative
+                best_group_idx = np.argmax(scores)
+                y_pick = y_min + group_ys[best_group_idx]
+                ys[i] = y_pick
+
+        return xs, ys
+
+
+    def _trace_columns_basic(self,
                        edges: np.ndarray,
                        x_min: int,
                        x_max: int,
@@ -163,10 +336,9 @@ class GuidedCurveTracer:
         Returns:
             Tuple of (x_array, y_array)
         """
-        # H = edges.shape[0]
+        H = edges.shape[0]
         xs = np.arange(x_min, x_max + 1, dtype=int)
         ys = []
-
         search_height = y_max - y_min + 1
 
         # Create Gaussian weights favoring points near guide
@@ -189,7 +361,7 @@ class GuidedCurveTracer:
                 ys.append(float(guide_y))
                 continue
 
-            # Get first edge from top (air->liquid transition)
+            # Get first edge from top
             y_top = y_min + edge_indices[0]
 
             if len(edge_indices) > 3:
@@ -225,7 +397,7 @@ class GuidedCurveTracer:
         ys_smooth = self._hampel_filter(ys_smooth, k=7, n_sigma=3.0)
 
         # Remove short spikes
-        ys_smooth = self._remove_short_spikes(ys_smooth, max_run=3, jump_px=8)
+        ys_smooth = self._remove_short_spikes(ys_smooth, max_run=2, jump_px=2)
 
         # Enforce continuity
         ys_smooth = self._enforce_continuity(ys_smooth, self.max_step_px)
@@ -335,6 +507,8 @@ class GuidedCurveTracer:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         cv2.putText(overlay, f"Guide: y={metadata['guide_y_normalized']:.3f}", (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(overlay, f"Variance: {metadata['y_variance']:.3f}", (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         # Save
         cv2.imwrite(str(output_path), overlay)
@@ -346,12 +520,12 @@ def main():
     parser.add_argument("-o", "--outdir", default="guided_curve_results", help="Output directory")
     parser.add_argument("--guide-y", type=float, default=None,
                         help="Optional guide y-position (0-1). If not provided, will detect automatically")
-    parser.add_argument("--top", type=float, default=0.20, help="Top boundary (fraction)")
+    parser.add_argument("--top", type=float, default=0.30, help="Top boundary (fraction)")
     parser.add_argument("--bottom", type=float, default=0.80, help="Bottom boundary (fraction)")
     parser.add_argument("--left", type=float, default=0.05, help="Left boundary (fraction)")
     parser.add_argument("--right", type=float, default=0.95, help="Right boundary (fraction)")
-    parser.add_argument("--search-offset", type=int, default=30,
-                        help="Vertical search offset around guide line (pixels)")
+    parser.add_argument("--search-offset", type=float, default=0.10,
+                        help="Vertical search offset around guide line (fraction of image height)")
     parser.add_argument("--median-k", type=int, default=9, help="Median filter kernel size")
     parser.add_argument("--max-step", type=int, default=4, help="Max step between points (pixels)")
 
@@ -369,7 +543,7 @@ def main():
     tracer = GuidedCurveTracer(
         vertical_bounds=(args.top, args.bottom),
         horizontal_bounds=(args.left, args.right),
-        search_offset_px=args.search_offset,
+        search_offset_frac=args.search_offset,
         median_kernel=args.median_k,
         max_step_px=args.max_step
     )
@@ -386,11 +560,11 @@ def main():
     print(f"  Y-variance: {np.var(ys):.2f}")
 
     # Create output directory
-    outdir = Path(args.outdir)
+    stem = Path(args.image).stem
+    outdir = Path(args.outdir) / f"{stem}_result"
     outdir.mkdir(parents=True, exist_ok=True)
 
     # Save visualization
-    stem = Path(args.image).stem
     viz_path = outdir / f"{stem}_guided_curve.png"
     tracer.visualize(img, xs, ys, metadata, viz_path)
     print(f"\nVisualization saved to: {viz_path}")
