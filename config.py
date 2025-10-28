@@ -16,6 +16,26 @@ CLASS_IDS = {
 # Liquid classes
 LIQUID_CLASSES = {CLASS_IDS['STABLE'], CLASS_IDS['GEL']}
 
+# Liquid detector conf
+LIQUID_DETECTOR = {
+    'liquid_weights': 'liquid/best_renamed.pt',  # Path to weights file
+    'liquid_task': 'detect',  # or 'segment'
+    'liquid_img_size': 640,
+    'liquid_conf': 0.45,
+    'liquid_iou': 0.50,
+}
+
+# Vial detector conf
+VIAL_DETECTOR = {
+    'vial_weights': 'vial/best.pt',
+    'vial_imgsz': 640,
+    'vial_conf': 0.65,
+    'vial_iou': 0.45,
+    'vial_pad': 0.05,
+    'vial_crop_h': 640,
+    'vial_topk': -1
+}
+
 # Detection thresholds
 DETECTION_THRESHOLDS = {
     'conf_min': 0.20,               # Minimum confidence for detections
@@ -53,11 +73,18 @@ REGION_EXCLUSION = {
 LINE_PARAMS = {
     'min_line_length': 0.75,           # minimum line length for detection
     'merge_threshold': 0.05,           # merge lines that are too close together
-    'vertical_bounds': (0.25, 0.80),   # normalized (top, bottom)
+    'top_exclusion': 0.30,             # top exclusion fraction
+    'bottom_exclusion': 0.15,          # bottom exclusion fraction
     'horizontal_bounds': (0.03, 0.97), # normalized (left, right)
     'search_offset_px': 30,            # vertical search offset around guide line (pixels)
     'median_kernel': 9,                # median filter kernel size
     'max_step_px': 3,                  # max step between points (pixels)
+    # line_hv_detector.py params
+    'horiz_kernel_div': 15,            # horizontal kernel size
+    'vert_kernel_div': 30,             # vertical kernel size
+    'adaptive_block': 15,              # adaptive block
+    'adaptive_c': -2,                  # adaptive c
+    'min_line_strength': 0.8,          # min line strength
 }
 
 # Curve analysis thresholds
@@ -73,7 +100,8 @@ CURVE_PARAMS = {
     "horizontal_bounds": (0.05, 0.95),  # normalized (left, right)
     "search_offset_px": 30,             # vertical search offset around guide line (pixels)
     "median_kernel": 9,                 # median filter kernel size
-    "max_step_px": 4                    # max step between points (pixels)
+    "max_step_px": 4,                    # max step between points (pixels)
+    "num_segments": 5
 }
 
 # Only air classification
@@ -93,4 +121,22 @@ VISUALIZATION_PARAMS = {
 DEFAULT_PATHS = {
     'yolov5_root': Path('yolov5'),
     'output_root': Path('runs/vial2liquid'),
+}
+
+LINE_RULES = {
+    "cap_level_frac": 0.08,          # fraction of vial height from the top to ignore as cap/neck
+    "min_line_len_frac": 0.65,       # length relative to interior width to count as “true” interface
+    "two_line_ps_conf": "high",      # sets confidence bump for phase separation
+}
+
+REGION_RULES = {
+    "full_vial_min_height_frac": 0.85,  # single liquid spans ≥ this of vial height
+    "top_half_frac": 0.50,              # boundary for top half
+    "bottom_touch_pad_px": 6,           # bottom reach padding
+}
+
+DETECTION_FILTERS = {
+    "conf_min": 0.25,
+    "min_liquid_area_frac": 0.01,   # drop tiny fragments
+    "merge_iou": 0.5,               # merge overlapping liquid fragments
 }
