@@ -51,10 +51,16 @@ def run_curve_metrics(crop_path: Path) -> Dict[str, Any]:
     stats = analyzer.compute_comprehensive_statistics(
         xs=xs_np, ys=ys_np, baseline_y=None, window_size=20
     )
+    # initialise segments data
+    segments = analyzer.segment_curve(
+        xs=xs_np,
+        ys=ys_np,
+        num_segments=params.get("num_segments", 5),
+    )
     # decision: variance from baseline
     var_thr = params.get("gel_variance_thr", 80.0)
     std_dev_thr = params.get("std_dev_thr", 10.0)
-    inter_segment_variance = params.get("inter_segment_variance", 40.0)
+    inter_segment_variance_thr = params.get("inter_segment_variance", 40.0)
     rough_thr = params.get("roughness_thr", 0.85)
 
     gelled = (stats.variance_from_baseline >= var_thr)
@@ -65,6 +71,6 @@ def run_curve_metrics(crop_path: Path) -> Dict[str, Any]:
         "curve_metadata": meta,
         "reason": f"variance {stats.variance_from_baseline:.2f} > {var_thr} threshold, "
                   f"std_dev {stats.std_dev_from_baseline:.2f} > {std_dev_thr} threshold, "
-                  f"inter_segment_variance {stats.inter_segment_variance:.2f} > {inter_segment_variance} threshold, "
+                  f"inter_segment_variance {segments['inter_segment_variance']:.2f} > {inter_segment_variance_thr} threshold, "
                   f"roughness {stats.roughness:.2f} > {rough_thr} threshold" if gelled else "no curve"
     }
