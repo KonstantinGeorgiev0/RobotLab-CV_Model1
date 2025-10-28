@@ -25,7 +25,7 @@ class GuidedCurveTracer:
     def __init__(self,
                  vertical_bounds: Tuple[float, float] = (0.20, 0.80),
                  horizontal_bounds: Tuple[float, float] = (0.05, 0.95),
-                 search_offset_px: int = 30,
+                 search_offset_frac: float = 0.05,
                  median_kernel: int = 9,
                  max_step_px: int = 4):
         """
@@ -34,13 +34,13 @@ class GuidedCurveTracer:
         Args:
             vertical_bounds: (top_frac, bottom_frac) - fraction of image height
             horizontal_bounds: (left_frac, right_frac) - fraction of image width
-            search_offset_px: Vertical offset around detected horizontal line to search
+            search_offset_frac: Vertical offset around detected horizontal line to search
             median_kernel: Kernel size for median smoothing
             max_step_px: Maximum allowed step between adjacent points
         """
         self.vertical_bounds = vertical_bounds
         self.horizontal_bounds = horizontal_bounds
-        self.search_offset_px = search_offset_px
+        self.search_offset_frac = search_offset_frac
         self.median_kernel = median_kernel
         self.max_step_px = max_step_px
         self.line_detector = LineDetector(min_line_length=CURVE_PARAMS.get("min_line_length", 0.25))
@@ -74,8 +74,10 @@ class GuidedCurveTracer:
         x_min_px = int(self.horizontal_bounds[0] * W)
         x_max_px = int(self.horizontal_bounds[1] * W)
 
-        y_min_search = max(0, guide_y_px - self.search_offset_px)
-        y_max_search = min(H - 1, guide_y_px + self.search_offset_px)
+        # Convert frac to px
+        search_offset_px = int(self.search_offset_frac * H)
+        y_min_search = max(0, guide_y_px - search_offset_px)
+        y_max_search = min(H - 1, guide_y_px + search_offset_px)
 
         # Extract edges optimized for curved interface
         edges = extract_edges_for_curve_detection(img_bgr)
@@ -352,7 +354,7 @@ def main():
     parser.add_argument("--bottom", type=float, default=0.90, help="Bottom boundary (fraction)")
     parser.add_argument("--left", type=float, default=0.05, help="Left boundary (fraction)")
     parser.add_argument("--right", type=float, default=0.95, help="Right boundary (fraction)")
-    parser.add_argument("--search-offset", type=int, default=30,
+    parser.add_argument("--search-offset", type=int, default=0.05,
                         help="Vertical search offset around guide line (pixels)")
     parser.add_argument("--median-k", type=int, default=9, help="Median filter kernel size")
     parser.add_argument("--max-step", type=int, default=4, help="Max step between points (pixels)")
@@ -371,7 +373,7 @@ def main():
     tracer = GuidedCurveTracer(
         vertical_bounds=(args.top, args.bottom),
         horizontal_bounds=(args.left, args.right),
-        search_offset_px=args.search_offset,
+        search_offset_frac=args.search_offset,
         median_kernel=args.median_k,
         max_step_px=args.max_step
     )

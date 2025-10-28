@@ -30,7 +30,7 @@ def run_curve_metrics(crop_path: Path) -> Dict[str, Any]:
     tracer = GuidedCurveTracer(
         vertical_bounds=params.get("vertical_bounds", (0.30, 0.80)),
         horizontal_bounds=params.get("horizontal_bounds", (0.05, 0.95)),
-        search_offset_px=params.get("search_offset_px", 30),
+        search_offset_frac=params.get("search_offset_frac", 0.05),
         median_kernel=params.get("median_kernel", 9),
         max_step_px=params.get("max_step_px", 4),
     )

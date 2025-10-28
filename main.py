@@ -394,7 +394,7 @@ class VialDetectionPipeline:
                         bottom=1.0 - self.args.exclude_bottom,
                         left=left_bound,
                         right=right_bound,
-                        search_offset=CURVE_PARAMS.get("search_offset_px", 30),
+                        search_offset=CURVE_PARAMS.get("search_offset_frac", 0.05),
                     median_k = CURVE_PARAMS.get("median_kernel", 9),
                     max_step = CURVE_PARAMS.get("max_step_px", 4),
                     guide_y = None

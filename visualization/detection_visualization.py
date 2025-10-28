@@ -284,7 +284,7 @@ def create_curve_visualization(
     bottom: float = CURVE_PARAMS["vertical_bounds"][1],
     left: float = CURVE_PARAMS["horizontal_bounds"][0],
     right: float = CURVE_PARAMS["horizontal_bounds"][1],
-    search_offset: int = CURVE_PARAMS["search_offset_px"],
+    search_offset: float = CURVE_PARAMS["search_offset_frac"],
     median_k: int = CURVE_PARAMS["median_kernel"],
     max_step: int = CURVE_PARAMS["max_step_px"],
     guide_y: Optional[float] = None,
@@ -302,7 +302,7 @@ def create_curve_visualization(
         bottom: Bottom boundary fraction (0-1)
         left: Left boundary fraction (0-1)
         right: Right boundary fraction (0-1)
-        search_offset: Vertical search offset (pixels)
+        search_offset: Vertical search offset fraction (of image height)
         median_k: Median filter kernel size
         max_step: Max step between points (pixels)
         guide_y: Optional guide y-position (0-1)
@@ -319,7 +319,7 @@ def create_curve_visualization(
     tracer = GuidedCurveTracer(
         vertical_bounds=(top, bottom),
         horizontal_bounds=(left, right),
-        search_offset_px=search_offset,
+        search_offset_frac=search_offset,
         median_kernel=median_k,
         max_step_px=max_step
     )
