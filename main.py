@@ -9,7 +9,8 @@ Orchestrates the two-stage process:
 import sys
 from pathlib import Path
 
-from visualization.detection_visualization import create_filtered_detection_visualization
+from visualization.detection_visualization import create_filtered_detection_visualization, create_line_visualization, \
+    create_curve_visualization
 
 # Ensure yolov5 is on sys.path
 YOLO_ROOT = Path(__file__).parent / "yolov5"
@@ -36,8 +37,9 @@ from yolov5.utils.general import (
 from yolov5.utils.torch_utils import select_device
 
 # Custom modules
-from config import DEFAULT_PATHS
+from config import DEFAULT_PATHS, LIQUID_DETECTOR, VIAL_DETECTOR, CURVE_PARAMS
 from analysis.state_classifier import VialStateClassifier
+from analysis.classification_tree import VialStateClassifierV2
 from analysis.turbidity_analysis import compute_turbidity_profile, analyze_region_turbidity
 from visualization.turbidity_viz import save_enhanced_turbidity_plot, create_detection_visualization
 from robotlab_utils.image_utils import resize_keep_height
@@ -62,13 +64,15 @@ class VialDetectionPipeline:
             }
 
         # Initialize classifier
-        self.classifier = VialStateClassifier(
-            use_line_detection=args.use_line_detection,
-            use_curved_line_detection=args.use_curved_line_detection,
-            use_turbidity=args.use_turbidity,
-            merge_boxes=args.merge_boxes,
-            region_exclusion=region_exclusion
-        )
+        # self.classifier = VialStateClassifier(
+        #     use_line_detection=args.use_line_detection,
+        #     use_curved_line_detection=args.use_curved_line_detection,
+        #     use_turbidity=args.use_turbidity,
+        #     merge_boxes=args.merge_boxes,
+        #     region_exclusion=region_exclusion
+        # )
+
+        self.classifier = VialStateClassifierV2()
 
         # Setup output directories
         self.out_root = Path(args.outdir)
@@ -291,7 +295,7 @@ class VialDetectionPipeline:
         # viz_dir.mkdir(parents=True, exist_ok=True)
 
         # Separate directory for filtered visualizations
-        filtered_viz_dir = liquid_out_dir / "visualizations_filtered"
+        filtered_viz_dir = liquid_out_dir / "visualizations"
         if self.args.save_viz and not self.args.no_region_exclusion:
             filtered_viz_dir.mkdir(parents=True, exist_ok=True)
 
@@ -344,28 +348,58 @@ class VialDetectionPipeline:
                         "max_gradient": float(np.max(np.abs(np.gradient(profile.normalized_profile)))) 
                                        if len(profile.normalized_profile) > 1 else 0.0
                     }
-                
+
                 # Create visualization if requested
                 if self.args.save_viz and label_path.exists():
-                    # viz_path = create_detection_visualization(
-                    #     crop_path,
-                    #     label_path,
-                    #     # viz_dir / f"{crop_path.stem}_viz.jpg"
-                    # )
-                    # state_info["visualization"] = str(viz_path)
+                    stem = crop_path.stem
 
                     # Filtered visualization (excluded regions)
+                    filtered_dir = filtered_viz_dir / f"{stem}_filtered"
+                    filtered_dir.mkdir(parents=True, exist_ok=True)
+                    filtered_img_path = filtered_dir / f"{stem}_filtered.jpg"
+
                     if not self.args.no_region_exclusion:
                         filtered_viz_path = create_filtered_detection_visualization(
                             crop_path,
                             label_path,
-                            filtered_viz_dir / f"{crop_path.stem}_filtered.jpg",
+                            filtered_img_path,
                             self.args.exclude_top,
                             self.args.exclude_bottom,
                             show_excluded_regions=True
                         )
                         state_info["visualization_filtered"] = str(filtered_viz_path)
-                
+
+                    # Line visualization
+                    lines_dir = filtered_viz_dir / f"{stem}_lines_data"
+                    lines_dir.mkdir(parents=True, exist_ok=True)
+                    line_viz_path = lines_dir / f"{stem}_lines.png"
+                    create_line_visualization(
+                        image_path=crop_path,
+                        output_path=line_viz_path,
+                        top_exclusion=self.args.exclude_top,
+                        bottom_exclusion=self.args.exclude_bottom
+                    )
+
+                    # Curve visualization
+                    curve_dir = filtered_viz_dir / f"{stem}_curve_data"
+                    curve_dir.mkdir(parents=True, exist_ok=True)
+                    curve_viz_path = curve_dir / f"{stem}_curve.png"
+
+                    # get horiz bounds
+                    left_bound, right_bound = CURVE_PARAMS.get("horizontal_bounds", (0.05, 0.95))
+                    create_curve_visualization(
+                        image_path=crop_path,
+                        output_path=curve_viz_path,
+                        top=self.args.exclude_top,
+                        bottom=1.0 - self.args.exclude_bottom,
+                        left=left_bound,
+                        right=right_bound,
+                        search_offset=CURVE_PARAMS.get("search_offset_px", 30),
+                    median_k = CURVE_PARAMS.get("median_kernel", 9),
+                    max_step = CURVE_PARAMS.get("max_step_px", 4),
+                    guide_y = None
+                    )
+
                 # Combine all information
                 record.update(state_info)
                 fout.write(json.dumps(record) + "\n")
@@ -448,29 +482,30 @@ def parse_args():
     # Stage A: Vial detection
     parser.add_argument("--vial-weights", type=str, required=True,
                        help="Path to vial detection model")
-    parser.add_argument("--imgsz", nargs="+", type=int, default=[640],
+    parser.add_argument("--imgsz", nargs="+", type=int, default=[VIAL_DETECTOR.get("vial_imgsz", 640)],
                        help="Inference size (height, width)")
-    parser.add_argument("--vial-conf", type=float, default=0.65,
+    parser.add_argument("--vial-conf", type=float, default=VIAL_DETECTOR.get("vial_conf", 0.65),
                        help="Vial detection confidence threshold")
-    parser.add_argument("--vial-iou", type=float, default=0.45,
+    parser.add_argument("--vial-iou", type=float, default=VIAL_DETECTOR.get("vial_iou", 0.45),
                        help="Vial detection IoU threshold")
-    parser.add_argument("--pad", type=float, default=0.05,
+    parser.add_argument("--pad", type=float, default=VIAL_DETECTOR.get("vial_pad", 0.05),
                        help="Padding fraction for vial crops")
-    parser.add_argument("--crop-h", type=int, default=640,
+    parser.add_argument("--crop-h", type=int, default=VIAL_DETECTOR.get("vial_crop_h", 640),
                        help="Target height for vial crops")
-    parser.add_argument("--topk", type=int, default=-1,
+    parser.add_argument("--topk", type=int, default=VIAL_DETECTOR.get("vial_topk", -1),
                        help="Keep top-K vials per image (-1 for all)")
     
     # Stage B: Liquid detection
     parser.add_argument("--liquid-task", choices=["detect", "segment"],
-                       default="detect", help="Liquid detection task type")
+                       default=LIQUID_DETECTOR.get("liquid_task", "detect"), help="Liquid detection task type")
     parser.add_argument("--liquid-weights", type=str, required=True,
-                       help="Path to liquid detection model")
-    parser.add_argument("--liquid-imgsz", type=int, default=640,
+                       default=LIQUID_DETECTOR.get("liquid_weights", "liquid/best_renamed.pt"),
+                        help="Path to liquid detection model")
+    parser.add_argument("--liquid-imgsz", type=int, default=LIQUID_DETECTOR.get("liquid_img_size", 640),
                        help="Liquid detection image size")
-    parser.add_argument("--liquid-conf", type=float, default=0.25,
+    parser.add_argument("--liquid-conf", type=float, default=LIQUID_DETECTOR.get("liquid_conf", 0.45),
                        help="Liquid detection confidence threshold")
-    parser.add_argument("--liquid-iou", type=float, default=0.50,
+    parser.add_argument("--liquid-iou", type=float, default=LIQUID_DETECTOR.get("liquid_iou", 0.50),
                        help="Liquid detection IoU threshold")
     parser.add_argument("--exclude-top", type=float, default=0.20,
                         help="Exclude top fraction of image (0.0-1.0)")
