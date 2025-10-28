@@ -76,7 +76,7 @@ LINE_PARAMS = {
     'top_exclusion': 0.30,             # top exclusion fraction
     'bottom_exclusion': 0.15,          # bottom exclusion fraction
     'horizontal_bounds': (0.03, 0.97), # normalized (left, right)
-    'search_offset_px': 30,            # vertical search offset around guide line (pixels)
+    'search_offset_frac': 0.10,          # vertical search offset around guide line (image fraction)
     'median_kernel': 9,                # median filter kernel size
     'max_step_px': 3,                  # max step between points (pixels)
     # line_hv_detector.py params
@@ -98,7 +98,7 @@ CURVE_PARAMS = {
     "min_line_length": 0.25,            # minimum line length for curve detection
     "vertical_bounds": (0.30, 0.80),    # normalized (top, bottom)
     "horizontal_bounds": (0.05, 0.95),  # normalized (left, right)
-    "search_offset_px": 30,             # vertical search offset around guide line (pixels)
+    "search_offset_frac": 0.10,         # vertical search offset around guide line (image fraction)
     "median_kernel": 9,                 # median filter kernel size
     "max_step_px": 4,                    # max step between points (pixels)
     "num_segments": 5

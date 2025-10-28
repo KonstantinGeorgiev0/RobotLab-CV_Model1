@@ -409,3 +409,105 @@ def build_curve_edges_from_guide(
 
     return edges, thresh, (x_min_px, x_max_px, y_min_search, y_max_search)
 
+
+# Guided curve helpers
+def compute_search_region_from_guide(
+        H: int,
+        W: int,
+        horizontal_bounds: tuple[float, float],
+        search_offset_frac: float,
+        guide_y_px: int
+    ) -> tuple[int, int, int, int]:
+    """
+    Compute (x_min_px, x_max_px, y_min_search, y_max_search) from bounds and a guide y.
+    """
+    x_min_px = int(horizontal_bounds[0] * W)
+    x_max_px = int(horizontal_bounds[1] * W)
+    x_min_px = max(0, min(x_min_px, W - 1))
+    x_max_px = max(0, min(x_max_px, W - 1))
+    if x_max_px < x_min_px:
+        x_min_px, x_max_px = x_max_px, x_min_px
+
+    search_offset_px = int(search_offset_frac * H)
+    y_min_search = max(0, guide_y_px - search_offset_px)
+    y_max_search = min(H - 1, guide_y_px + search_offset_px)
+    if y_max_search < y_min_search:
+        y_min_search, y_max_search = y_max_search, y_min_search
+
+    return x_min_px, x_max_px, y_min_search, y_max_search
+
+
+def vertical_sobel_edge_magnitude(
+        gray_roi: np.ndarray,
+        gaussian_ksize: tuple[int, int] = (3, 3),
+        sobel_ksize: int = 5,
+        equalize_hist: bool = True
+    ) -> tuple[np.ndarray, np.ndarray]:
+    """
+    blur -> (optional) equalize -> Sobel dy -> abs -> normalize to 0..255 -> Otsu.
+    Returns (edges_uint8, otsu_binary_uint8).
+    """
+    if gray_roi.ndim != 2:
+        raise ValueError("vertical_sobel_edge_magnitude expects a grayscale ROI")
+
+    # Apply blur for noise reduction
+    if gaussian_ksize is not None:
+        gray_proc = cv2.GaussianBlur(gray_roi, gaussian_ksize, 0)
+    else:
+        gray_proc = gray_roi.copy()
+
+    # Contrast for low-light vials
+    if equalize_hist:
+        gray_proc = cv2.equalizeHist(gray_proc)
+
+    # Vertical gradient using Sobel operator
+    sobel_y = cv2.Sobel(gray_proc, cv2.CV_64F, 0, 1, ksize=sobel_ksize)
+    mag = np.abs(sobel_y)
+
+    # Normalize safely to [0, 255]
+    mmax = float(mag.max())
+    if mmax > 0:
+        edges = (mag * (255.0 / mmax)).astype(np.uint8)
+    else:
+        edges = np.zeros_like(gray_proc, dtype=np.uint8)
+
+    # Otsu threshold for a debug/visual binary mask
+    _, thresh = cv2.threshold(edges, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return edges, thresh
+
+
+def build_curve_edges_from_guide(
+        img_bgr: np.ndarray,
+        guide_y_px: int,
+        horizontal_bounds: tuple[float, float],
+        search_offset_frac: float,
+        gaussian_ksize: tuple[int, int] = (3, 3),
+        sobel_ksize: int = 5,
+        equalize_hist: bool = True
+    ) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int, int]]:
+    """
+      1) computes the search region from the guide,
+      2) crops the ROI,
+      3) runs the vertical-Sobel edge magnitude pipeline.
+
+    Returns:
+        edges (uint8), otsu_binary (uint8), (x_min_px, x_max_px, y_min_search, y_max_search)
+    """
+    H, W = img_bgr.shape[:2]
+    x_min_px, x_max_px, y_min_search, y_max_search = compute_search_region_from_guide(
+        H, W, horizontal_bounds, search_offset_frac, guide_y_px
+    )
+
+    # Prepare grayscale ROI
+    gray_full = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY) if img_bgr.ndim == 3 else img_bgr
+    gray_roi = gray_full[y_min_search:y_max_search + 1, x_min_px:x_max_px + 1]
+
+    edges, thresh = vertical_sobel_edge_magnitude(
+        gray_roi,
+        gaussian_ksize=gaussian_ksize,
+        sobel_ksize=sobel_ksize,
+        equalize_hist=equalize_hist
+    )
+
+    return edges, thresh, (x_min_px, x_max_px, y_min_search, y_max_search)
+
