@@ -335,6 +335,8 @@ class GuidedCurveTracer:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         cv2.putText(overlay, f"Guide: y={metadata['guide_y_normalized']:.3f}", (10, 60),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(overlay, f"Variance={np.var(ys):.3f}", (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
         # Save
         cv2.imwrite(str(output_path), overlay)
@@ -346,8 +348,8 @@ def main():
     parser.add_argument("-o", "--outdir", default="guided_curve_results", help="Output directory")
     parser.add_argument("--guide-y", type=float, default=None,
                         help="Optional guide y-position (0-1). If not provided, will detect automatically")
-    parser.add_argument("--top", type=float, default=0.20, help="Top boundary (fraction)")
-    parser.add_argument("--bottom", type=float, default=0.80, help="Bottom boundary (fraction)")
+    parser.add_argument("--top", type=float, default=0.25, help="Top boundary (fraction)")
+    parser.add_argument("--bottom", type=float, default=0.90, help="Bottom boundary (fraction)")
     parser.add_argument("--left", type=float, default=0.05, help="Left boundary (fraction)")
     parser.add_argument("--right", type=float, default=0.95, help="Right boundary (fraction)")
     parser.add_argument("--search-offset", type=int, default=30,

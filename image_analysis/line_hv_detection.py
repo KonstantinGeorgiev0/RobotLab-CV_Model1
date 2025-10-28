@@ -13,6 +13,12 @@ from typing import List, Dict, Any, Optional, Union, TypeVar, Tuple
 from dataclasses import dataclass
 import sys
 
+# Import existing modules
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from config import LINE_PARAMS
+
 
 @dataclass
 class HorizontalLine:
@@ -225,7 +231,7 @@ class LineDetector:
         if line_type == 'horizontal':
             # Calculate exclusion zones
             top_idx = int(height * top_exclusion)
-            bottom_idx = int(height * bottom_exclusion)
+            bottom_idx = int(height * (1 - bottom_exclusion))
             top_idx = max(0, min(top_idx, height))
             bottom_idx = max(0, min(bottom_idx, height))
 
@@ -530,7 +536,7 @@ class LineDetector:
             top_line_y = int(top_exclusion * H)
             cv2.line(overlay, (0, top_line_y), (W, top_line_y), (255, 0, 0), 2)
         if bottom_exclusion > 0:
-            bottom_line_y = int(bottom_exclusion * H)
+            bottom_line_y = int((1 - bottom_exclusion) * H)
             cv2.line(overlay, (0, bottom_line_y), (W, bottom_line_y), (255, 0, 0), 2)
 
         # Draw vertical lines (red)
@@ -587,13 +593,13 @@ def main():
     ap.add_argument("-i", "--image", required=True, help="Path to input image")
     ap.add_argument("-o", "--outdir", default="line_hv_detection_results",
                    help="Output directory")
-    ap.add_argument("--top-exclusion", type=float, default=0.2,
+    ap.add_argument("--top-exclusion", type=float, default=LINE_PARAMS.get("top_exclusion", 0.30),
                    help="Fraction of top to exclude (0-1)")
-    ap.add_argument("--bottom-exclusion", type=float, default=0.8,
+    ap.add_argument("--bottom-exclusion", type=float, default=LINE_PARAMS.get("bottom_exclusion", 0.15),
                    help="Fraction of bottom to exclude (0-1)")
-    ap.add_argument("--min-line-length", type=float, default=0.3,
+    ap.add_argument("--min-line-length", type=float, default=LINE_PARAMS.get("min_line_length", 0.75),
                    help="Minimum line length as fraction")
-    ap.add_argument("--merge-threshold", type=float, default=0.02,
+    ap.add_argument("--merge-threshold", type=float, default=LINE_PARAMS.get("merge_threshold", 0.1),
                    help="Threshold for merging nearby lines")
     ap.add_argument("--save-debug", action="store_true",
                    help="Save debug images")
@@ -609,6 +615,11 @@ def main():
 
     # Initialize detector
     detector = LineDetector(
+        horiz_kernel_div=LINE_PARAMS.get("horiz_kernel_div", 15),
+        vert_kernel_div=LINE_PARAMS.get("vert_kernel_div", 30),
+        adaptive_c=LINE_PARAMS.get("adaptive_c", -2),
+        adaptive_block=LINE_PARAMS.get("adaptive_block", 15),
+        min_line_strength=LINE_PARAMS.get("min_line_strength", 0.8),
         min_line_length=args.min_line_length,
         merge_threshold=args.merge_threshold
     )

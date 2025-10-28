@@ -18,6 +18,7 @@ from dataclasses import dataclass, asdict
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from config import CURVE_PARAMS
 from image_analysis.guided_curve_tracer import GuidedCurveTracer
 from image_analysis.fourier_descriptors import FourierDescriptors
 
@@ -654,13 +655,13 @@ def main():
     # Curve tracer parameters
     parser.add_argument("--guide-y", type=float, default=None,
                         help="Optional guide y-position (0-1)")
-    parser.add_argument("--top", type=float, default=0.25)
-    parser.add_argument("--bottom", type=float, default=0.80)
-    parser.add_argument("--left", type=float, default=0.05)
-    parser.add_argument("--right", type=float, default=0.95)
-    parser.add_argument("--search-offset", type=int, default=30)
-    parser.add_argument("--median-k", type=int, default=9)
-    parser.add_argument("--max-step", type=int, default=4)
+    parser.add_argument("--top", type=float, default=CURVE_PARAMS["vertical_bounds"][0])
+    parser.add_argument("--bottom", type=float, default=CURVE_PARAMS["vertical_bounds"][1])
+    parser.add_argument("--left", type=float, default=CURVE_PARAMS["horizontal_bounds"][0])
+    parser.add_argument("--right", type=float, default=CURVE_PARAMS["horizontal_bounds"][1])
+    parser.add_argument("--search-offset", type=int, default=CURVE_PARAMS["search_offset_px"])
+    parser.add_argument("--median-k", type=int, default=CURVE_PARAMS["median_kernel"])
+    parser.add_argument("--max-step", type=int, default=CURVE_PARAMS["max_step_px"])
 
     # Analysis parameters
     parser.add_argument("--window-size", type=int, default=20,
@@ -702,12 +703,32 @@ def main():
         median_kernel=args.median_k,
         max_step_px=args.max_step
     )
+    xs, ys, curve_metadata = tracer.trace_curve(img, img_path, guide_y=args.guide_y)
+    # init curve stats
+    analyzer = CurveAnalyzer()
+    curve_stats = analyzer.compute_comprehensive_statistics(
+        xs=np.asarray(xs, dtype=np.float32),
+        ys=np.asarray(ys, dtype=np.float32),
+        baseline_y=None,
+        window_size=args.window_size,
+    )
+    # init anomalies
+    anomalies = analyzer.detect_anomalies(
+        xs=np.asarray(xs, dtype=np.float32),
+        ys=np.asarray(ys, dtype=np.float32),
+        threshold_sigma=args.anomaly_threshold,
+    )
+    # initialise segments data
+    segments = analyzer.segment_curve(
+        xs=np.asarray(xs, dtype=np.float32),
+        ys=np.asarray(ys, dtype=np.float32),
+        num_segments=args.num_segments,
+    )
 
     # Trace curve
     print(f"\n{'=' * 70}")
     print("STEP 1: CURVE DETECTION")
     print(f"{'=' * 70}")
-    xs, ys, curve_metadata = tracer.trace_curve(img, img_path, guide_y=args.guide_y)
     print(f"Detected {len(xs)} points")
     print(f"Guide Y: {curve_metadata.get('guide_y_normalized', float('nan')):.3f} "
           f"({curve_metadata.get('guide_y_px', 'N/A')} px)")
@@ -746,13 +767,6 @@ def main():
     print(f"\n{'=' * 70}")
     print("STEP 2: COMPREHENSIVE STATISTICS")
     print(f"{'=' * 70}")
-    analyzer = CurveAnalyzer()
-    curve_stats = analyzer.compute_comprehensive_statistics(
-        xs=np.asarray(xs, dtype=np.float32),
-        ys=np.asarray(ys, dtype=np.float32),
-        baseline_y=None,
-        window_size=args.window_size,
-    )
     print(f"Variance (from baseline): {curve_stats.variance_from_baseline:.4f}")
     print(f"Std Dev (from baseline): {curve_stats.std_dev_from_baseline:.3f} px")
     print(f"Smoothness score: {analyzer.compute_smoothness_score(np.asarray(ys, dtype=np.float32)):.1f}/100")
@@ -762,11 +776,6 @@ def main():
     print(f"\n{'=' * 70}")
     print("STEP 3: ANOMALY DETECTION")
     print(f"{'=' * 70}")
-    anomalies = analyzer.detect_anomalies(
-        xs=np.asarray(xs, dtype=np.float32),
-        ys=np.asarray(ys, dtype=np.float32),
-        threshold_sigma=args.anomaly_threshold,
-    )
     print(f"Anomalies detected: {anomalies['num_anomalies']}")
     if anomalies['num_anomalies'] > 0:
         print(f"Max deviation: {anomalies['max_deviation']:.2f} px")
@@ -776,11 +785,6 @@ def main():
     print(f"\n{'=' * 70}")
     print("STEP 4: SEGMENT ANALYSIS")
     print(f"{'=' * 70}")
-    segments = analyzer.segment_curve(
-        xs=np.asarray(xs, dtype=np.float32),
-        ys=np.asarray(ys, dtype=np.float32),
-        num_segments=args.num_segments,
-    )
     print(f"Segments: {segments['num_segments']}")
     print(f"Inter-segment variance: {segments['inter_segment_variance']:.4f}")
     print(f"Max segment std: {segments['max_segment_std']:.3f}")
