@@ -3,12 +3,12 @@ Hierarchical vial state classifier using decision tree architecture.
 """
 import shutil
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Union
 from enum import Enum
 from pathlib import Path
 import numpy as np
 import cv2
-# from graphviz import Digraph
+from graphviz import Digraph
 
 from detection.liquid_detector import LiquidDetector
 from robotlab_utils.bbox_utils import yolo_line_to_xyxy, box_area
@@ -728,63 +728,103 @@ class VialStateClassifierV2:
         )
 
 
-# def export_tree_graphviz(root: DecisionNode,
-#                          out_dot: Path | str,
-#                          out_png: Path | str | None = None,
-#                          title: str = "Vial State Decision Tree") -> Digraph:
-#     """
-#     Export the custom DecisionNode tree as a Graphviz Digraph (.dot/.png).
-#     - Nodes are DecisionNode names.
-#     - Edges are labeled with the child 'key' used in add_child(key, node).
-#     """
-#     dot = Digraph(name="VialStateTree", format="png")
-#     dot.attr(label=title, labelloc="t", fontsize="18")
-#     dot.attr("graph", rankdir="TB", splines="spline", nodesep="0.35", ranksep="0.4")
-#     dot.attr("node", shape="box", style="rounded,filled", fillcolor="#f7f7f9",
-#              color="#999999", fontname="Helvetica", fontsize="10")
-#     dot.attr("edge", color="#666666", fontname="Helvetica", fontsize="9")
-#
-#     # give each node a compact unique id
-#     id_map: dict[int, str] = {}
-#     counter = {"n": 0}
-#
-#     def node_id(n: DecisionNode) -> str:
-#         if id(n) not in id_map:
-#             counter["n"] += 1
-#             id_map[id(n)] = f"N{counter['n']}"
-#         return id_map[id(n)]
-#
-#     def is_terminal(n: DecisionNode) -> bool:
-#         # terminal leaves usually have no children.
-#         return len(n.children) == 0
-#
-#     def add_node(n: DecisionNode):
-#         nid = node_id(n)
-#         # decorate terminal nodes
-#         if is_terminal(n):
-#             dot.node(nid, f"{n.name}\n(terminal)", shape="doubleoctagon", fillcolor="#eef7ff")
-#         else:
-#             dot.node(nid, f"{n.name}", shape="box", fillcolor="#f7f7f9")
-#
-#     def walk(n: DecisionNode, seen: set[int]):
-#         add_node(n)
-#         seen.add(id(n))
-#         for key, child in n.children.items():
-#             add_node(child)
-#             dot.edge(node_id(n), node_id(child), label=key)
-#             if id(child) not in seen:
-#                 walk(child, seen)
-#
-#     walk(root, set())
-#
-#     # write files
-#     out_dot = Path(out_dot)
-#     out_dot.parent.mkdir(parents=True, exist_ok=True)
-#     dot.save(filename=str(out_dot))  # writes .dot
-#
-#     if out_png is not None:
-#         out_png = Path(out_png)
-#         out_png.parent.mkdir(parents=True, exist_ok=True)
-#         dot.render(filename=str(out_png.with_suffix("")), format="png", cleanup=True)
-#
-#     return dot
+def export_tree_graphviz(
+    root: DecisionNode,
+    out_dot: Union[Path, str],
+    out_png: Optional[Union[Path, str]] = None,
+    title: str = "Vial State Decision Tree",
+    highlight_path: Optional[List[str]] = None,
+) -> Digraph:
+    """
+    Export the DecisionNode tree as Graphviz DOT/PNG.
+
+    highlight_path: list of node names visited in order (e.g., decision.node_path).
+                    When provided, those nodes and their connecting edges are highlighted.
+    """
+    dot = Digraph(name="VialStateTree", format="png")
+    dot.attr(label=title, labelloc="t", fontsize="18")
+    dot.attr("graph", rankdir="TB", splines="spline", nodesep="0.35", ranksep="0.4")
+    dot.attr("node", shape="box", style="rounded,filled", fillcolor="#f7f7f9",
+             color="#999999", fontname="Helvetica", fontsize="10")
+    dot.attr("edge", color="#666666", fontname="Helvetica", fontsize="9")
+
+    id_map: dict[int, str] = {}
+    counter = {"n": 0}
+    highlight_nodes = set(highlight_path or [])
+
+    # build parent->child-name->key map for edge highlighting
+    edge_in_path: set[tuple[str, str]] = set()
+    if highlight_path and len(highlight_path) >= 2:
+        # walk down root using names
+        name_to_nodes: dict[str, list[DecisionNode]] = {}
+
+        def index_nodes(n: DecisionNode):
+            name_to_nodes.setdefault(n.name, []).append(n)
+            for ch in n.children.values():
+                index_nodes(ch)
+        index_nodes(root)
+
+        # reconstruct pairs by searching the unique child for each hop
+        for i in range(len(highlight_path) - 1):
+            p_name = highlight_path[i]
+            c_name = highlight_path[i + 1]
+            # disambiguate if names repeat: pick any parent instance that has a child with that name
+            for p in name_to_nodes.get(p_name, []):
+                for key, ch in p.children.items():
+                    if ch.name == c_name:
+                        edge_in_path.add((p_name, c_name))
+                        break
+
+    def node_id(n: DecisionNode) -> str:
+        if id(n) not in id_map:
+            counter["n"] += 1
+            id_map[id(n)] = f"N{counter['n']}"
+        return id_map[id(n)]
+
+    def is_terminal(n: DecisionNode) -> bool:
+        return len(n.children) == 0
+
+    def add_node(n: DecisionNode):
+        nid = node_id(n)
+
+        # base style depending on terminal status
+        if is_terminal(n):
+            attrs = dict(shape="doubleoctagon", fillcolor="#eef7ff")
+        else:
+            attrs = dict(shape="box", fillcolor="#f7f7f9")
+
+        # highlight if node is on decision path
+        if n.name in highlight_nodes:
+            attrs.update({
+                "color": "#FF6A00",
+                "penwidth": "2.6",
+                "fillcolor": "#FFE6CC"
+            })
+
+        dot.node(nid, f"{n.name}", **attrs)
+
+    def walk(n: DecisionNode, seen: set[int]):
+        add_node(n)
+        seen.add(id(n))
+        for key, child in n.children.items():
+            add_node(child)
+            # style for edges on highlight path
+            if (n.name, child.name) in edge_in_path:
+                dot.edge(node_id(n), node_id(child), label=key, color="#FF6A00", penwidth="2.6")
+            else:
+                dot.edge(node_id(n), node_id(child), label=key)
+            if id(child) not in seen:
+                walk(child, seen)
+
+    walk(root, set())
+
+    out_dot = Path(out_dot)
+    out_dot.parent.mkdir(parents=True, exist_ok=True)
+    dot.save(filename=str(out_dot))  # writes .dot
+
+    if out_png is not None:
+        out_png = Path(out_png)
+        out_png.parent.mkdir(parents=True, exist_ok=True)
+        dot.render(filename=str(out_png.with_suffix("")), format="png", cleanup=True)
+
+    return dot

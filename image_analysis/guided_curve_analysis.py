@@ -20,8 +20,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from config import CURVE_PARAMS
 from image_analysis.guided_curve_tracer import GuidedCurveTracer
-from image_analysis.fourier_descriptors import FourierDescriptors
-
 
 @dataclass
 class CurveStatistics:
@@ -68,7 +66,6 @@ class CurveStatistics:
     # Frequency analysis
     dominant_frequency: float
     spectral_energy: float
-    interface_type: str
     low_freq_ratio: float
     high_freq_ratio: float
     fourier_smoothness: float
@@ -170,7 +167,6 @@ class CurveAnalyzer:
             point_density=point_density,
             dominant_frequency=freq_stats['dominant_frequency'],
             spectral_energy=freq_stats['spectral_energy'],
-            interface_type=freq_stats['interface_type'],
             low_freq_ratio=freq_stats['low_freq_ratio'],
             high_freq_ratio=freq_stats['high_freq_ratio'],
             fourier_smoothness=freq_stats['fourier_smoothness'],
@@ -279,10 +275,6 @@ class CurveAnalyzer:
 
         # Fourier descriptor analysis
         xs = np.arange(len(ys))  # Assuming uniform spacing
-        fd = FourierDescriptors()
-
-        # Classify interface type
-        interface_type = fd.classify_interface_type(xs, ys)
 
         # Compute frequency bands
         total_power = np.sum(power)
@@ -302,7 +294,6 @@ class CurveAnalyzer:
         return {
             'dominant_frequency': dominant_freq,
             'spectral_energy': spectral_energy,
-            'interface_type': interface_type,
             'low_freq_ratio': float(low_freq_power),
             'high_freq_ratio': float(high_freq_power),
             'fourier_smoothness': float(low_freq_power / (high_freq_power + 1e-8))
@@ -659,7 +650,7 @@ def main():
     parser.add_argument("--bottom", type=float, default=CURVE_PARAMS["vertical_bounds"][1])
     parser.add_argument("--left", type=float, default=CURVE_PARAMS["horizontal_bounds"][0])
     parser.add_argument("--right", type=float, default=CURVE_PARAMS["horizontal_bounds"][1])
-    parser.add_argument("--search-offset", type=int, default=CURVE_PARAMS["search_offset_px"])
+    parser.add_argument("--search-offset", type=float, default=CURVE_PARAMS["search_offset_frac"])
     parser.add_argument("--median-k", type=int, default=CURVE_PARAMS["median_kernel"])
     parser.add_argument("--max-step", type=int, default=CURVE_PARAMS["max_step_px"])
 
@@ -699,7 +690,7 @@ def main():
     tracer = GuidedCurveTracer(
         vertical_bounds=(args.top, args.bottom),
         horizontal_bounds=(args.left, args.right),
-        search_offset_px=args.search_offset,
+        search_offset_frac=args.search_offset,
         median_kernel=args.median_k,
         max_step_px=args.max_step
     )
