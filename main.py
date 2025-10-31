@@ -9,8 +9,8 @@ Orchestrates the two-stage process:
 import sys
 from pathlib import Path
 
-from visualization.detection_visualization import create_filtered_detection_visualization, create_line_visualization, \
-    create_curve_visualization
+from analysis.gelled_analysis import run_curve_metrics
+from image_analysis.line_hv_detection import LineDetector
 
 # Ensure yolov5 is on sys.path
 YOLO_ROOT = Path(__file__).parent / "yolov5"
@@ -37,13 +37,16 @@ from yolov5.utils.general import (
 from yolov5.utils.torch_utils import select_device
 
 # Custom modules
-from config import DEFAULT_PATHS, LIQUID_DETECTOR, VIAL_DETECTOR, CURVE_PARAMS
-from analysis.state_classifier import VialStateClassifier
-from analysis.classification_tree import VialStateClassifierV2, export_tree_graphviz
+from config import DEFAULT_PATHS, LIQUID_DETECTOR, VIAL_DETECTOR, CURVE_PARAMS, LINE_PARAMS
+# from analysis.state_classifier import VialStateClassifier
+from analysis.classification_tree import VialStateClassifierV2
+# from analysis.classification_tree_old import VialStateClassifierV2
 from analysis.turbidity_analysis import compute_turbidity_profile, analyze_region_turbidity
 from visualization.turbidity_viz import save_enhanced_turbidity_plot, create_detection_visualization
 from robotlab_utils.image_utils import resize_keep_height
 from robotlab_utils.bbox_utils import expand_and_clamp
+from visualization.detection_visualization import create_filtered_detection_visualization, create_line_visualization, \
+    create_curve_visualization, export_tree_graphviz
 
 
 class VialDetectionPipeline:
@@ -404,25 +407,53 @@ class VialDetectionPipeline:
                     tree_dir = filtered_viz_dir / f"{stem}_tree_viz"
                     tree_dir.mkdir(parents=True, exist_ok=True)
                     # get decision path
-                    decision_path = state_info.get("decision_path", "")
+                    node_path_list = state_info.get("decision_path", [])
                     # highlight the path that the image took
-                    path_nodes = [s.strip() for s in decision_path.split("->")] if decision_path else None
+                    path_nodes = [s.strip() for s in node_path_list.split("->")] if node_path_list else None
 
                     # export DOT + PNG
                     dot_path = tree_dir / f"{stem}_tree.dot"
                     png_path = tree_dir / f"{stem}_tree.png"
                     export_tree_graphviz(
-                        root=self.classifier.tree,
+                        root=self.classifier.root,
+                        # root=self.classifier.tree,
                         out_dot=dot_path,
                         out_png=png_path,
                         title=f"Decision Tree — {stem}",
                         highlight_path=path_nodes
                     )
 
+                    # # Line data
+                    # line_result = LineDetector().detect(crop_path)
+                    # state_info["line_data"] = {
+                    #     "num_horizontal": len(line_result["horizontal_lines"]["lines"]),
+                    #     "num_vertical": len(line_result["vertical_lines"]["lines"]),
+                    #     "horizontal": [
+                    #         {
+                    #             "y_px": l["y_position"] * img.shape[0],
+                    #             "length_frac": l["length_fraction"],
+                    #             "thickness": l["thickness"],
+                    #             "x_start": l["x_start"],
+                    #             "x_end": l["x_end"]
+                    #         }
+                    #         for l in line_result["horizontal_lines"]["lines"]
+                    #     ]
+                    # }
+                    #
+                    # # Curve data
+                    # curve_result = run_curve_metrics(crop_path)
+                    # curve_stats = curve_result.get("stats", {})
+                    # state_info["curve_data"] = {
+                    #     "variance": curve_stats.get("variance_from_baseline", 0.0),
+                    #     "std_dev": curve_stats.get("std_dev_from_baseline", 0.0),
+                    #     "inter_segment_variance": curve_stats.get("inter_segment_variance", 0.0),
+                    #     "roughness": curve_stats.get("roughness", 0.0),
+                    # }
+
                 # Combine all information
                 record.update(state_info)
                 fout.write(json.dumps(record) + "\n")
-                
+
                 # Update counts
                 state = state_info.get("vial_state", "unknown")
                 state_counts[state] = state_counts.get(state, 0) + 1

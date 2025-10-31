@@ -77,13 +77,13 @@ class LineDetector:
     """Detector for horizontal and vertical lines in vial images."""
 
     def __init__(self,
-                 horiz_kernel_div: int = 15,
-                 vert_kernel_div: int = 30,
-                 adaptive_block: int = 15,
-                 adaptive_c: int = -2,
-                 min_line_length: float = 0.3,
-                 min_line_strength: float = 0.1,
-                 merge_threshold: float = 0.02):
+                 horiz_kernel_div: int = LINE_PARAMS["horiz_kernel_div"],
+                 vert_kernel_div: int = LINE_PARAMS["vert_kernel_div"],
+                 adaptive_block: int = LINE_PARAMS["adaptive_block"],
+                 adaptive_c: int = LINE_PARAMS["adaptive_c"],
+                 min_line_length: float = LINE_PARAMS["horiz_kernel_div"],
+                 min_line_strength: float = LINE_PARAMS["min_line_length"],
+                 merge_threshold: float = LINE_PARAMS["merge_threshold"]):
         """Initialize detector with parameters."""
         self.horiz_kernel_div = horiz_kernel_div
         self.vert_kernel_div = vert_kernel_div
@@ -96,8 +96,8 @@ class LineDetector:
 
     def detect(self,
                image_path: Path,
-               top_exclusion: float = 0.0,
-               bottom_exclusion: float = 0.0,
+               top_exclusion: float = LINE_PARAMS["top_exclusion"],
+               bottom_exclusion: float = LINE_PARAMS["bottom_exclusion"],
                save_debug: bool = False,
                debug_dir: Optional[Path] = None) -> Dict[str, Any]:
         """

@@ -42,6 +42,9 @@ DETECTION_THRESHOLDS = {
     'iou_thr': 0.50,                # IoU threshold for merging boxes
     'gel_area_frac': 0.35,          # Gel area fraction threshold
     'gel_dominance_count': 1,       # Gel box count dominance threshold
+    'air_brightness_thr': 100.0,    # Mean brightness below this → likely AIR
+    'empty_top_frac': 0.35,         # If top y1 > height * this, consider empty top
+    'large_liquid_bottom_frac': 0.75,  # If single liquid extends > this frac of height, check for misclassification
 }
 
 # Phase separation thresholds
@@ -55,10 +58,10 @@ PHASE_SEPARATION_THRESHOLDS = {
 TURBIDITY_PARAMS = {
     'analysis_width': 100,           # Standard width for turbidity analysis
     'analysis_height': 500,          # Standard height for turbidity analysis
-    'top_exclude_fraction': 0.25,    # Default top exclusion fraction
+    'top_exclude_fraction': 0.30,    # Default top exclusion fraction
     'bottom_exclude_fraction': 0.05, # Bottom exclusion fraction
     'gradient_threshold_sigma': 2.5, # Sigma multiplier for gradient threshold
-    'gradient_threshold_min': 0.10,  # Minimum gradient threshold
+    'gradient_threshold_min': 0.15,  # Minimum gradient threshold
     'peak_separation_fraction': 0.1, # Minimum separation between peaks
 }
 
@@ -72,7 +75,7 @@ REGION_EXCLUSION = {
 # Line detection parameters
 LINE_PARAMS = {
     'min_line_length': 0.75,           # minimum line length for detection
-    'merge_threshold': 0.05,           # merge lines that are too close together
+    'merge_threshold': 0.10,           # merge lines that are too close together
     'top_exclusion': 0.30,             # top exclusion fraction
     'bottom_exclusion': 0.15,          # bottom exclusion fraction
     'horizontal_bounds': (0.03, 0.97), # normalized (left, right)
@@ -89,8 +92,8 @@ LINE_PARAMS = {
 
 # Curve analysis thresholds
 CURVE_PARAMS = {
-    "gel_variance_thr": 80.0,           # variance threshold for gel detection
-    "stable_variance_thr": 50.0,        # variance threshold for stable detection
+    "gel_variance_thr": 75.0,           # variance threshold for gel detection
+    "stable_variance_thr": 55.0,        # variance threshold for stable detection
     "std_dev_thr": 10.0,                # standard deviation threshold
     "roughness_thr": 0.85,              # std of 2nd derivative, optional second guard
     "inter_segment_variance": 40.0,     # inter segment variance
@@ -124,7 +127,7 @@ DEFAULT_PATHS = {
 }
 
 LINE_RULES = {
-    "cap_level_frac": 0.08,          # fraction of vial height from the top to ignore as cap/neck
+    "cap_level_frac": 0.25,          # fraction of vial height from the top to ignore as cap/neck
     "min_line_len_frac": 0.65,       # length relative to interior width to count as “true” interface
     "two_line_ps_conf": "high",      # sets confidence bump for phase separation
 }
@@ -133,6 +136,8 @@ REGION_RULES = {
     "full_vial_min_height_frac": 0.85,  # single liquid spans ≥ this of vial height
     "top_half_frac": 0.50,              # boundary for top half
     "bottom_touch_pad_px": 6,           # bottom reach padding
+    "air_top_touch_frac": 0.25,         # touches top
+    "air_deep_span_frac": 0.75,         # spans deep down the vial
 }
 
 DETECTION_FILTERS = {
