@@ -15,7 +15,8 @@ from robotlab_utils.bbox_utils import yolo_line_to_xyxy, box_area
 from image_analysis.line_hv_detection import LineDetector
 from analysis.gelled_analysis import run_curve_metrics
 from config import CLASS_IDS, LIQUID_CLASSES, CURVE_PARAMS, DETECTION_THRESHOLDS, DETECTION_FILTERS, LINE_RULES, \
-    LINE_PARAMS, LIQUID_DETECTOR
+    LINE_PARAMS, LIQUID_DETECTOR, REGION_RULES
+from robotlab_utils.image_utils import extract_region, calculate_brightness_stats
 from robotlab_utils.liquid_detection_utils import parse_detections
 
 
@@ -132,96 +133,130 @@ class RootNode(DecisionNode):
         if evidence.air_count > 0 and evidence.liquid_count == 0:
             return "only_air", None
 
-        # Multiple liquid regions detected
-        if evidence.liquid_count >= 2:
-            return "multiple_liquids", None
-
         # Single liquid region
         if evidence.liquid_count == 1:
             return "single_liquid", None
 
+        # Multiple liquid regions
+        if evidence.liquid_count >= 2:
+            return "multiple_liquids", None
+
         # Fallback
-        return "unknown", None
+        return None, Decision (
+            state=VialState.UNKNOWN,
+            confidence=Confidence.LOW,
+            reasoning=["Fallback: Unexpected detection pattern"],
+            node_path=path
+        )
 
 
 class NoDetectionsNode(DecisionNode):
-    """Handle case where model found nothing."""
-
+    """Handle case with no detections."""
     def __init__(self):
-        super().__init__("no_detections", "No model detections found")
+        super().__init__("no_detections", "No model detections")
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
+        reasoning = ["No detections from model"]
 
-        # Use image brightness as fallback
-        # This would need to be added to Evidence if needed
-        reasoning = ["No detections from model", "Checking image characteristics"]
+        # Potential overrides
+        if evidence.curve_variance >= CURVE_PARAMS["gel_variance_thr"]:
+            reasoning.append("Curve analysis override to gelled")
+            return None, Decision(
+                state=VialState.GELLED,
+                confidence=Confidence.MEDIUM,
+                reasoning=reasoning,
+                evidence_summary={"curve_variance": evidence.curve_variance},
+                alternative_states=[(VialState.ONLY_AIR, 0.3)],
+                node_path=path
+            )
 
+        if evidence.num_horizontal_lines >= 2:
+            reasoning.append("Multiple lines suggest phase separation")
+            return None, Decision(
+                state=VialState.PHASE_SEPARATED,
+                confidence=Confidence.MEDIUM,
+                reasoning=reasoning,
+                evidence_summary={"num_horizontal_lines": evidence.num_horizontal_lines},
+                alternative_states=[(VialState.STABLE, 0.3)],
+                node_path=path
+            )
+
+        if evidence.num_horizontal_lines == 1 and evidence.curve_variance <= CURVE_PARAMS["stable_variance_thr"]:
+            reasoning.append("Single horizontal line suggests stable")
+            return None, Decision(
+                state=VialState.STABLE,
+                confidence=Confidence.MEDIUM,
+                reasoning=reasoning,
+                evidence_summary={"num_horizontal_lines": evidence.num_horizontal_lines},
+                alternative_states=[(VialState.ONLY_AIR, 0.3)],
+                node_path=path
+            )
+
+        # Fallback to unknown or only air
         return None, Decision(
             state=VialState.UNKNOWN,
             confidence=Confidence.LOW,
-            reasoning=reasoning,
-            evidence_summary={"detections": 0},
-            node_path=path.copy()
+            reasoning=reasoning + ["No overrides from analysis"],
+            alternative_states=[(VialState.ONLY_AIR, 0.4)],
+            node_path=path
         )
 
 
 class OnlyAirNode(DecisionNode):
-    """Handle case where only AIR was detected (no liquid)."""
-
+    """Handle case where only AIR is detected."""
     def __init__(self):
-        super().__init__("only_air", "Only AIR detected by model")
+        super().__init__("only_air", "Only AIR detected")
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
-        reasoning = ["Model detected only AIR", "Checking line detection for missed liquid"]
+        reasoning = ["Model detected only AIR", "Checking image analysis for missed liquid"]
 
-        # Check if multiple horizontal lines exist (missed liquid interface)
+        # Multiple lines override
         if evidence.num_horizontal_lines >= 2:
             return "air_with_lines", None
 
-        # Check curve analysis
-        if evidence.curve_variance >= CURVE_PARAMS.get("gel_variance_thr", 80.0):
+        # Curve override for gel
+        if evidence.curve_variance >= CURVE_PARAMS.get("gel_variance_thr", 75.0):
             return "air_with_curve", None
 
-        # Check line analysis
-        if (evidence.num_horizontal_lines == 1 and
-                evidence.curve_variance <= CURVE_PARAMS.get("stable_variance_thr", 50.0) and
-                evidence.hline_len_frac[0] > LINE_PARAMS.get("min_line_length", 0.75)):
-            return "air_with_single_line", None
+        # Single line with low curve variance
+        if evidence.num_horizontal_lines == 1 and evidence.curve_variance <= CURVE_PARAMS.get("stable_variance_thr", 55.0):
+            if len(evidence.hline_len_frac) > 0 and evidence.hline_len_frac[0] > LINE_PARAMS.get("min_line_length", 0.75):
+                return "air_with_single_line", None
 
         # Consider in-between case
-        if (CURVE_PARAMS.get("gel_variance_thr", 80.0) > evidence.curve_variance >
-                CURVE_PARAMS.get("stable_variance_thr", 50.0)):
-            if evidence.hline_len_frac[0] > LINE_PARAMS.get("min_line_length", 0.75):
+        if (CURVE_PARAMS.get("gel_variance_thr", 75.0) > evidence.curve_variance >
+                CURVE_PARAMS.get("stable_variance_thr", 55.0)):
+            if evidence.num_horizontal_lines > 0 and len(evidence.hline_len_frac) > 0 and evidence.hline_len_frac[0] > LINE_PARAMS.get("min_line_length", 0.75):
                 return "air_with_single_line", None
             else:
                 return "air_with_curve", None
 
-        # Truly only air
-        reasoning.append("No evidence of liquid in image analysis")
+        # Default to only air
+        reasoning.append("No overrides from image analysis")
         return None, Decision(
             state=VialState.ONLY_AIR,
             confidence=Confidence.HIGH,
             reasoning=reasoning,
             evidence_summary={
-                "air_detections": evidence.air_count,
-                "horizontal_lines": evidence.num_horizontal_lines
+                "air_count": evidence.air_count,
+                "num_horizontal_lines": evidence.num_horizontal_lines,
+                "curve_variance": evidence.curve_variance
             },
-            node_path=path.copy()
+            node_path=path
         )
 
 
 class AirWithLinesNode(DecisionNode):
-    """AIR detected but horizontal lines suggest phase separation."""
-
+    """Air with multiple horizontal lines."""
     def __init__(self):
-        super().__init__("air_with_lines", "AIR + horizontal lines detected")
+        super().__init__("air_with_lines", "Air with multiple lines")
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
         reasoning = [
-            "Model detected AIR only",
+            "Only AIR detected",
             f"Found {evidence.num_horizontal_lines} horizontal lines",
             "Lines suggest phase separation missed by model"
         ]
@@ -231,28 +266,24 @@ class AirWithLinesNode(DecisionNode):
             confidence=Confidence.MEDIUM,
             reasoning=reasoning,
             evidence_summary={
-                "detection_source": "line_analysis",
-                "num_lines": evidence.num_horizontal_lines
+                "num_horizontal_lines": evidence.num_horizontal_lines
             },
             alternative_states=[(VialState.ONLY_AIR, 0.3)],
-            node_path=path.copy()
+            node_path=path
         )
 
 
 class AirWithCurveNode(DecisionNode):
     """AIR detected but curve suggests GEL."""
-
     def __init__(self):
-        super().__init__("air_with_curve", "AIR + high curve variance")
+        super().__init__("air_with_curve", "Air with curve override")
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
         reasoning = [
-            "Model detected AIR only",
-            f"Curve variance {evidence.curve_variance:.2f} indicates GEL",
-            "Gel state missed by model"
+            "Only air detected",
+            f"High curve variance ({evidence.curve_variance:.2f}) suggests gelled state"
         ]
-
         return None, Decision(
             state=VialState.GELLED,
             confidence=Confidence.MEDIUM,
@@ -261,54 +292,82 @@ class AirWithCurveNode(DecisionNode):
                 "detection_source": "curve_analysis",
                 "curve_variance": evidence.curve_variance
             },
-            alternative_states=[(VialState.STABLE, 0.2)],
-            node_path=path.copy()
+            alternative_states=[(VialState.STABLE, 0.3)],
+            node_path=path
         )
 
-class AirWithSingleLineNode(DecisionNode):
-    """AIR detected but single horizontal line suggests STALE (OR possibly GEL)."""
 
+class AirWithSingleLineNode(DecisionNode):
+    """Air with single strong horizontal line."""
     def __init__(self):
-        super().__init__("air_with_single_line", "AIR + single detected horizontal line")
+        super().__init__("air_with_single_line", "Air with single line override")
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
         reasoning = [
-            "Model detected AIR only",
-            f"Detected {evidence.num_horizontal_lines} horizontal line indicates STABLE",
-            "STABLE state missed by model"
+            "Only AIR detected",
+            "Single strong horizontal line and low curve variance suggest stable liquid"
         ]
-
         return None, Decision(
             state=VialState.STABLE,
             confidence=Confidence.MEDIUM,
             reasoning=reasoning,
             evidence_summary={
-                "detection_source": "line_analysis",
-                "number of horizontal lines": evidence.num_horizontal_lines,
-                "line length fraction": evidence.hline_len_frac,
-                "low curve variance": evidence.curve_variance
+                "num_horizontal_lines": evidence.num_horizontal_lines,
+                "line_length_fraction": evidence.hline_len_frac[0] if evidence.hline_len_frac else 0,
+                "curve_variance": evidence.curve_variance
             },
             alternative_states=[(VialState.GELLED, 0.3)],
-            node_path=path.copy()
+            node_path=path
         )
 
-class MultipleLiquidsNode(DecisionNode):
-    """Multiple liquid regions detected by model."""
 
+class MultipleLiquidsNode(DecisionNode):
+    """Handle multiple liquid detections."""
     def __init__(self):
-        super().__init__("multiple_liquids", "Multiple liquid regions detected")
+        super().__init__("multiple_liquids", "Multiple liquid regions")
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
-        reasoning = [f"Model detected {evidence.liquid_count} liquid regions"]
+        # print("\nAIRCOUNT\n", evidence.air_count)
+        if evidence.air_count > 0:
+            return "multiple_with_air", None
+        else:
+            return "multiple_no_air", None
 
-        # Check horizontal lines for confirmation
+        # reasoning = [f"Multiple liquid regions detected ({evidence.liquid_count})"]
+        #
+        # # Confidence boost with lines
+        # conf = Confidence.HIGH if evidence.num_horizontal_lines >= 2 else Confidence.MEDIUM
+        # if evidence.num_horizontal_lines >= 2:
+        #     reasoning.append("Confirmed by multiple horizontal lines")
+        #
+        # return None, Decision(
+        #     state=VialState.PHASE_SEPARATED,
+        #     confidence=conf,
+        #     reasoning=reasoning,
+        #     evidence_summary={
+        #         "liquid_count": evidence.liquid_count,
+        #         "num_horizontal_lines": evidence.num_horizontal_lines
+        #     },
+        #     node_path=path
+        # )
+
+
+class MultipleWithAirNode(DecisionNode):
+    """Multiple liquid regions with AIR present."""
+    def __init__(self):
+        super().__init__("multiple_with_air", "Multiple liquids + air")
+
+    def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
+        path.append(self.name)
+
+        reasoning = ["Multiple liquid regions detected with AIR present"]
         if evidence.num_horizontal_lines >= 2:
-            reasoning.append(f"Confirmed by {evidence.num_horizontal_lines} horizontal lines")
+            reasoning.append("Confirmed by multiple horizontal lines")
             conf = Confidence.HIGH
         else:
-            reasoning.append("No horizontal lines detected for confirmation")
+            reasoning.append("Only one/no line; still multiple regions present")
             conf = Confidence.MEDIUM
 
         return None, Decision(
@@ -316,196 +375,507 @@ class MultipleLiquidsNode(DecisionNode):
             confidence=conf,
             reasoning=reasoning,
             evidence_summary={
-                "liquid_regions": evidence.liquid_count,
-                "horizontal_lines": evidence.num_horizontal_lines
+                "liquid_count": evidence.liquid_count,
+                "air_count": evidence.air_count,
+                "num_horizontal_lines": evidence.num_horizontal_lines
             },
-            node_path=path.copy()
+            node_path=path
+        )
+
+
+class MultipleNoAirNode(DecisionNode):
+    """
+    Multiple liquid regions but no AIR detected.
+    If the top-most liquid 'touches top' and either spans deep or we only see 1 horizontal line,
+    reclassify that top box to AIR and route to the single_liquid branch.
+    Otherwise, if ≥2 lines and the top-most liquid does NOT touch top → PS.
+    """
+    def __init__(self):
+        super().__init__("multiple_no_air", "Multiple liquids, no air")
+
+    @staticmethod
+    def _recompute(ev: Evidence) -> None:
+        total_liquid_area = sum(d['area'] for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
+        gel_area = sum(d['area'] for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+        ev.total_liquid_area = total_liquid_area
+        ev.gel_area_fraction = gel_area / total_liquid_area if total_liquid_area > 0 else 0.0
+        ev.gel_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+        ev.stable_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['STABLE'])
+        ev.air_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR'])
+        ev.liquid_count = ev.gel_count + ev.stable_count
+
+    def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
+        path.append(self.name)
+        H = evidence.image_height
+
+        # Find top-most liquid box
+        liquid_dets = [d for d in evidence.detections if d['class_id'] in LIQUID_CLASSES]
+        if not liquid_dets:
+            # Safety fallback
+            return None, Decision(
+                state=VialState.UNKNOWN, confidence=Confidence.LOW,
+                reasoning=["Multiple liquids expected but none present after filtering"],
+                node_path=path
+            )
+
+        top_liq = min(liquid_dets, key=lambda d: d['box'][1])
+        y1, y2 = top_liq['box'][1], top_liq['box'][3]
+
+        # Thresholds
+        touch_thr = REGION_RULES.get("air_top_touch_frac", 0.25) * H
+        deep_thr  = REGION_RULES.get("air_deep_span_frac", 0.75) * H
+
+        # Measured cap level
+        cap_ok = (evidence.cap_level_y is not None) and (y1 <= evidence.cap_level_y)
+        near_top = (y1 <= touch_thr) or cap_ok
+        spans_deep = (y2 >= deep_thr)
+
+        # Choose longest line if present for trimming
+        interface_y = None
+        if evidence.hline_y and evidence.hline_len_frac:
+            idx = int(np.argmax(evidence.hline_len_frac))
+            interface_y = evidence.hline_y[idx]
+
+        # Case 1: likely AIR FP (top-most liquid actually AIR)
+        if near_top and (evidence.num_horizontal_lines == 1 or spans_deep):
+            # Reclassify top-most liquid as AIR and trim to interface
+            top_liq['class_id'] = CLASS_IDS['AIR']
+            top_liq['reclassified_from'] = 'LIQUID→AIR (near_top + 1 line or deep span)'
+            if interface_y is not None and top_liq['box'][3] > interface_y:
+                top_liq['box'][3] = interface_y  # keep AIR above the interface
+
+            # Recompute counts/areas
+            self._recompute(evidence)
+
+            # Route to single_liquid path
+            return "route_single", None
+
+        # Case 2: clear PS
+        if evidence.num_horizontal_lines >= 2 and not near_top:
+            return None, Decision(
+                state=VialState.PHASE_SEPARATED,
+                confidence=Confidence.HIGH,
+                reasoning=[
+                    "Multiple liquids with no AIR",
+                    "Top-most liquid does not touch the top",
+                    f"{evidence.num_horizontal_lines} horizontal lines confirm phase separation"
+                ],
+                evidence_summary={
+                    "liquid_count": evidence.liquid_count,
+                    "num_horizontal_lines": evidence.num_horizontal_lines
+                },
+                node_path=path
+            )
+
+        # Default: multiple liquids (no AIR), ambiguous lines - PS
+        return None, Decision(
+            state=VialState.PHASE_SEPARATED,
+            confidence=Confidence.MEDIUM,
+            reasoning=[
+                "Multiple liquids with no AIR",
+                "Ambiguous line evidence (not reclassified to AIR)"
+            ],
+            evidence_summary={
+                "liquid_count": evidence.liquid_count,
+                "num_horizontal_lines": evidence.num_horizontal_lines
+            },
+            node_path=path
         )
 
 
 class SingleLiquidNode(DecisionNode):
-    """Single liquid region detected - need to classify as gel or stable."""
-
+    """Handle single liquid detection."""
     def __init__(self):
-        super().__init__("single_liquid", "Single liquid region detected")
+        super().__init__("single_liquid", "Single liquid region")
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
 
-        # Check model's classification first
+        if evidence.air_count > 0:
+            return "single_with_air", None
+        else:
+            return "single_no_air", None
+
+
+class SingleWithAirNode(DecisionNode):
+    """Single liquid with air."""
+    def __init__(self):
+        super().__init__("single_with_air", "Single liquid with air")
+
+    def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
+        path.append(self.name)
+
         if evidence.gel_count > evidence.stable_count:
-            return "model_says_gel", None
+            return "gel_dominant", None
         elif evidence.stable_count > evidence.gel_count:
-            return "model_says_stable", None
+            return "stable_dominant", None
         else:
-            # Equal or unclear, go to analysis
-            return "unclear_liquid", None
+            return "mixed_liquid", None
 
 
-class ModelSaysGelNode(DecisionNode):
-    """Model classified as gel - verify with analysis."""
-
+class GelDominantNode(DecisionNode):
+    """Gel dominant in liquid."""
     def __init__(self):
-        super().__init__("model_says_gel", "Model classified as GEL")
+        super().__init__("gel_dominant", "Gel dominant")
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
-        reasoning = ["Model classified as GEL"]
-
-        # Check curve analysis for confirmation
-        gel_var_thr = CURVE_PARAMS.get("gel_variance_thr", 80.0)
-        stable_var_thr = CURVE_PARAMS.get("stable_variance_thr", 50.0)
-
-        if evidence.curve_variance >= gel_var_thr:
-            reasoning.append(f"Curve variance {evidence.curve_variance:.2f} confirms gel")
-            conf = Confidence.HIGH
-            alt = []
-        elif evidence.curve_variance < stable_var_thr:
-            reasoning.append(f"Curve variance {evidence.curve_variance:.2f} suggests stable")
-            reasoning.append("Contradiction between model and curve analysis")
-            conf = Confidence.LOW
-            alt = [(VialState.STABLE, 0.6)]
-        else:
-            reasoning.append(f"Curve variance {evidence.curve_variance:.2f} is ambiguous")
-            conf = Confidence.MEDIUM
-            alt = [(VialState.STABLE, 0.3)]
-
+        reasoning = ["Single liquid with air", "Gel detections dominant"]
         return None, Decision(
             state=VialState.GELLED,
-            confidence=conf,
+            confidence=Confidence.HIGH,
             reasoning=reasoning,
             evidence_summary={
-                "gel_area_fraction": evidence.gel_area_fraction,
-                "curve_variance": evidence.curve_variance
+                "gel_count": evidence.gel_count,
+                "stable_count": evidence.stable_count
             },
-            alternative_states=alt,
-            node_path=path.copy()
+            node_path=path
         )
 
 
-class ModelSaysStableNode(DecisionNode):
-    """Model classified as stable - verify with analysis."""
-
+class StableDominantNode(DecisionNode):
+    """Stable dominant in liquid."""
     def __init__(self):
-        super().__init__("model_says_stable", "Model classified as STABLE")
+        super().__init__("stable_dominant", "Stable dominant")
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
-        reasoning = ["Model classified as STABLE"]
-
-        # Check curve analysis for contradiction
-        gel_var_thr = CURVE_PARAMS.get("gel_variance_thr", 80.0)
-
-        if evidence.curve_variance >= gel_var_thr:
-            reasoning.append(f"Curve variance {evidence.curve_variance:.2f} indicates gel")
-            reasoning.append("Overriding model with curve analysis")
-            return None, Decision(
-                state=VialState.GELLED,
-                confidence=Confidence.MEDIUM,
-                reasoning=reasoning,
-                evidence_summary={
-                    "model_classification": "stable",
-                    "curve_variance": evidence.curve_variance
-                },
-                alternative_states=[(VialState.STABLE, 0.3)],
-                node_path=path.copy()
-            )
-
-        # Check for horizontal line (perfectly stable interface)
-        if evidence.num_horizontal_lines == 1:
-            reasoning.append("Single horizontal line confirms stable interface")
-            conf = Confidence.HIGH
-        else:
-            reasoning.append("No clear horizontal line detected")
-            conf = Confidence.MEDIUM
-
+        reasoning = ["Single liquid with air", "Stable detections dominant"]
         return None, Decision(
             state=VialState.STABLE,
-            confidence=conf,
+            confidence=Confidence.HIGH,
             reasoning=reasoning,
             evidence_summary={
-                "stable_area_fraction": 1.0 - evidence.gel_area_fraction,
-                "horizontal_lines": evidence.num_horizontal_lines,
-                "curve_variance": evidence.curve_variance
+                "stable_count": evidence.stable_count,
+                "gel_count": evidence.gel_count
             },
-            node_path=path.copy()
+            node_path=path
         )
 
 
-class UnclearLiquidNode(DecisionNode):
-    """Model unclear about gel vs stable - rely on analysis."""
-
+class MixedLiquidNode(DecisionNode):
+    """Mixed gel/stable detections."""
     def __init__(self):
-        super().__init__("unclear_liquid", "Model classification unclear")
+        super().__init__("mixed_liquid", "Mixed liquid types")
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
-        reasoning = ["Model classification unclear", "Relying on image analysis"]
+        reasoning = ["Single liquid with air", "Mixed gel and stable detections"]
 
-        gel_var_thr = CURVE_PARAMS.get("gel_variance_thr", 80.0)
-        stable_var_thr = CURVE_PARAMS.get("stable_variance_thr", 50.0)
-
-        # Curve analysis is primary
-        if evidence.curve_variance >= gel_var_thr:
-            reasoning.append(f"Curve variance {evidence.curve_variance:.2f} indicates gel")
-            state = VialState.GELLED
-            conf = Confidence.MEDIUM
-        elif evidence.curve_variance < stable_var_thr:
-            reasoning.append(f"Curve variance {evidence.curve_variance:.2f} indicates stable")
-            state = VialState.STABLE
-            conf = Confidence.MEDIUM
-        else:
-            reasoning.append(f"Curve variance {evidence.curve_variance:.2f} is ambiguous")
-            # Use area-based fallback
-            if evidence.gel_area_fraction > 0.5:
-                state = VialState.GELLED
-                reasoning.append(f"Gel area fraction {evidence.gel_area_fraction:.2f} tips toward gel")
-            else:
-                state = VialState.STABLE
-                reasoning.append(f"Gel area fraction {evidence.gel_area_fraction:.2f} tips toward stable")
-            conf = Confidence.LOW
+        state = VialState.GELLED if evidence.gel_area_fraction > 0.5 else VialState.STABLE
+        reasoning.append(f"Dominant by area: {state.value} (gel fraction {evidence.gel_area_fraction:.2f})")
 
         return None, Decision(
             state=state,
-            confidence=conf,
+            confidence=Confidence.MEDIUM,
             reasoning=reasoning,
-            evidence_summary={
-                "curve_variance": evidence.curve_variance,
-                "gel_area_fraction": evidence.gel_area_fraction
-            },
-            node_path=path.copy()
+            evidence_summary={"gel_area_fraction": evidence.gel_area_fraction},
+            alternative_states=[(VialState.UNKNOWN, 0.2)],
+            node_path=path
         )
 
 
-# ============================================================================
-# DECISION TREE BUILDER
-# ============================================================================
-def build_decision_tree() -> DecisionNode:
-    """Construct the complete decision tree."""
+class SingleNoAirNode(DecisionNode):
+    """Single liquid without air."""
+    def __init__(self):
+        super().__init__("single_no_air", "Single liquid no air")
+
+    def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
+        path.append(self.name)
+        reasoning = ["Single liquid detected", "No air detections"]
+
+        # Multiple lines override
+        if evidence.num_horizontal_lines >= 2:
+            return "no_air_with_lines", None
+
+        # Curve override
+        if evidence.curve_variance >= CURVE_PARAMS.get("gel_variance_thr", 80.0):
+            return "no_air_with_curve", None
+
+        # Single line with low variance
+        if evidence.num_horizontal_lines == 1 and evidence.curve_variance <= CURVE_PARAMS.get("stable_variance_thr", 50.0):
+            if len(evidence.hline_len_frac) > 0 and evidence.hline_len_frac[0] > LINE_PARAMS.get("min_line_length", 0.75):
+                return "no_air_with_single_line", None
+
+        # In-between case
+        if (CURVE_PARAMS.get("gel_variance_thr", 80.0) > evidence.curve_variance >
+                CURVE_PARAMS.get("stable_variance_thr", 50.0)):
+            if len(evidence.hline_len_frac) > 0 and evidence.hline_len_frac[0] > LINE_PARAMS.get("min_line_length", 0.75):
+                return "no_air_with_single_line", None
+            else:
+                return "no_air_with_curve", None
+
+        # No indicators
+        return "no_indicators", None
+
+
+class NoAirWithLinesNode(DecisionNode):
+    """No air with multiple lines."""
+    def __init__(self):
+        super().__init__("no_air_with_lines", "No air with multiple lines")
+
+    def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
+        path.append(self.name)
+        reasoning = [
+            "Single liquid no air",
+            f"Multiple horizontal lines ({evidence.num_horizontal_lines}) suggest phase separation"
+        ]
+        return None, Decision(
+            state=VialState.PHASE_SEPARATED,
+            confidence=Confidence.MEDIUM,
+            reasoning=reasoning,
+            evidence_summary={"num_horizontal_lines": evidence.num_horizontal_lines},
+            alternative_states=[(VialState.STABLE, 0.2)],
+            node_path=path
+        )
+
+
+class NoAirWithCurveNode(DecisionNode):
+    """No air with high curve variance."""
+    def __init__(self):
+        super().__init__("no_air_with_curve", "No air with curve")
+
+    def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
+        path.append(self.name)
+        reasoning = [
+            "Single liquid no air",
+            f"High curve variance ({evidence.curve_variance:.2f}) suggests gelled"
+        ]
+        return None, Decision(
+            state=VialState.GELLED,
+            confidence=Confidence.MEDIUM,
+            reasoning=reasoning,
+            evidence_summary={"curve_variance": evidence.curve_variance},
+            alternative_states=[(VialState.STABLE, 0.3)],
+            node_path=path
+        )
+
+
+class NoAirWithSingleLineNode(DecisionNode):
+    """No air with single line."""
+    def __init__(self):
+        super().__init__("no_air_with_single_line", "No air with single line")
+
+    def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
+        path.append(self.name)
+        reasoning = [
+            "Single liquid no air",
+            "Single strong line and low variance suggest stable"
+        ]
+        return None, Decision(
+            state=VialState.STABLE,
+            confidence=Confidence.MEDIUM,
+            reasoning=reasoning,
+            evidence_summary={
+                "num_horizontal_lines": 1,
+                "line_length_fraction": evidence.hline_len_frac[0] if evidence.hline_len_frac else 0,
+                "curve_variance": evidence.curve_variance
+            },
+            alternative_states=[(VialState.GELLED, 0.3)],
+            node_path=path
+        )
+
+
+class NoAirNoIndicatorsNode(DecisionNode):
+    """No air and no overrides."""
+    def __init__(self):
+        super().__init__("no_indicators", "No indicators for override")
+
+    def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
+        path.append(self.name)
+        reasoning = ["Single liquid no air", "No line or curve indicators"]
+        return None, Decision(
+            state=VialState.UNKNOWN,
+            confidence=Confidence.LOW,
+            reasoning=reasoning,
+            evidence_summary={
+                "num_horizontal_lines": evidence.num_horizontal_lines,
+                "curve_variance": evidence.curve_variance
+            },
+            alternative_states=[(VialState.STABLE, 0.4), (VialState.GELLED, 0.3)],
+            node_path=path
+        )
+
+
+def _apply_air_placement_rules(ev: Evidence) -> None:
+    """
+    Enforce: AIR must be the single top-most region above the interface.
+    Also fixes two common failure modes:
+      (1) Top liquid FP that actually represents AIR.
+      (2) AIR FN when there is empty space above the highest detection.
+    """
+    H, W = ev.image_height, ev.image_width
+    if H == 0 or W == 0 or not ev.detections:
+        return
+
+    cap_y = int(LINE_RULES.get("cap_level_frac", 0.10) * H)
+
+    # choose longest horizontal line
+    interface_y = None
+    if ev.hline_y:
+        print("\n interface_y REACHED \n")
+        try:
+            idx = int(np.argmax(ev.hline_len_frac))
+        except Exception:
+            idx = 0
+        interface_y = ev.hline_y[idx]
+
+    tol_px = max(2, int(0.01 * H))  # small tolerance on line position
+
+    def is_topmost(det):
+        return det['box'][1] == min(d['box'][1] for d in ev.detections)
+
+    def recompute_counts():
+        ev.liquid_count = sum(1 for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
+        ev.gel_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+        ev.stable_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['STABLE'])
+        ev.air_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR'])
+        ev.total_liquid_area = sum(d['area'] for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
+        gel_area = sum(d['area'] for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+        ev.gel_area_fraction = (gel_area / ev.total_liquid_area) if ev.total_liquid_area > 0 else 0.0
+
+    def most_likely_liquid_class():
+        return CLASS_IDS['GEL'] if ev.gel_count >= ev.stable_count else CLASS_IDS['STABLE']
+
+    recompute_counts()
+
+    # if AIR is present: must be single, top-most, above interface
+    air_dets = [d for d in ev.detections if d['class_id'] == CLASS_IDS['AIR']]
+    if len(air_dets) > 0:
+        print("\nAIR Present REACHED\n")
+        # if multiple AIR, keep only top-most AIR region
+        if len(air_dets) > 1:
+            top_air = min(air_dets, key=lambda d: d['box'][1])
+            for d in air_dets:
+                if d is top_air:
+                    continue
+                d['class_id'] = most_likely_liquid_class()
+            recompute_counts()
+            air_dets = [top_air]
+
+        air = air_dets[0]
+        y1, y2 = air['box'][1], air['box'][3]
+
+        if not is_topmost(air):
+            print("\nAIR NOT TOPMOST REACHED\n")
+            # AIR below a liquid region - reclassify
+            air['class_id'] = most_likely_liquid_class()
+            recompute_counts()
+        else:
+            print("\nAIR TOPMOST REACHED\n")
+            # required to be above the interface and start near top
+            above_interface_ok = True
+            if interface_y is not None:
+                above_interface_ok = (y2 <= interface_y + tol_px)
+
+            if not above_interface_ok or y1 > cap_y:
+                # AIR bottom below interface or AIR not start near top - reclassify
+                air['class_id'] = most_likely_liquid_class()
+                recompute_counts()
+
+    # If AIR is missing: infer AIR at the top when obvious
+    if sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR']) == 0:
+        print("\nAIR INFER AT TOP REACHED\n")
+        sorted_dets = sorted(ev.detections, key=lambda d: d['box'][1])
+        top_det = sorted_dets[0]
+        ty1, ty2 = top_det['box'][1], top_det['box'][3]
+
+        # Empty space above highest detection - synthesize AIR
+        empty_space_frac_thr = max(0.12, 2.0 * LINE_RULES.get("cap_level_frac", 0.08))
+        gap_frac = ty1 / float(H)
+        empty_space_condition = gap_frac >= empty_space_frac_thr
+        if interface_y is not None:
+            empty_space_condition = empty_space_condition or (ty1 >= interface_y - tol_px)
+        if empty_space_condition:
+            # reclassify the top-most detection
+
+            print("\nREACHED\n")
+
+            top_det['class_id'] = CLASS_IDS['AIR']
+            top_det['source'] = 'air_reclassified_from_liquid'
+            # Adjust bottom boundary to match interface
+            if interface_y is not None:
+                top_det['box'][3] = min(top_det['box'][3], interface_y - tol_px)
+            else:
+                top_det['box'][3] = ty1  # keep above previous liquid start
+            # Recalculate area
+            top_det['area'] = float((top_det['box'][3] - top_det['box'][1]) * W)
+            recompute_counts()
+
+        else:
+            # The top-most detection touches top - likely AIR false positive
+            if ty1 <= cap_y and len(sorted_dets) >= 2:
+                top_det['class_id'] = CLASS_IDS['AIR']
+                if interface_y is not None:
+                    top_det['box'][3] = min(top_det['box'][3], interface_y)
+                recompute_counts()
+
+    # brightness tie-breaker if still no AIR after geometry
+    if sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR']) == 0:
+        if ev.image_path and ev.image_path.exists():
+            img = cv2.imread(str(ev.image_path))
+            if img is not None and ev.detections:
+                # top-most region
+                top_det = min(ev.detections, key=lambda d: d['box'][1])
+                # only if it is liquid class
+                if top_det['class_id'] in LIQUID_CLASSES:
+                    x1, y1, x2, y2 = map(int, top_det['box'])
+                    roi = img[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
+                    if roi.size > 0:
+                        mean = float(roi.mean())
+                        thr = DETECTION_THRESHOLDS.get('air_brightness_thr', 80.0)
+                        if mean < thr:
+                            top_det['class_id'] = CLASS_IDS['AIR']
+                            top_det['source'] = 'air_reclassified_by_brightness'
+                            # trim to interface if present
+                            if 'hline_y' in ev.__dict__ and ev.hline_y:
+                                idx = int(np.argmax(ev.hline_len_frac))
+                                interface_y = ev.hline_y[idx]
+                                top_det['box'][3] = min(top_det['box'][3], interface_y)
+
+
+def _build_tree() -> DecisionNode:
+    """Build the decision tree structure."""
     root = RootNode()
 
-    # Branch: No detections
+    # No detections branch
     root.add_child("no_detections", NoDetectionsNode())
 
-    # Branch: Only AIR
-    air_node = OnlyAirNode()
-    air_node.add_child("air_with_lines", AirWithLinesNode())
-    air_node.add_child("air_with_curve", AirWithCurveNode())
-    air_node.add_child("air_with_single_line", AirWithSingleLineNode())
-    root.add_child("only_air", air_node)
+    # Only air branch
+    only_air = OnlyAirNode()
+    only_air.add_child("air_with_lines", AirWithLinesNode())
+    only_air.add_child("air_with_curve", AirWithCurveNode())
+    only_air.add_child("air_with_single_line", AirWithSingleLineNode())
+    root.add_child("only_air", only_air)
 
-    # Branch: Multiple liquids
-    root.add_child("multiple_liquids", MultipleLiquidsNode())
+    # Single liquid
+    single_liquid = SingleLiquidNode()
+    root.add_child("single_liquid", single_liquid)
 
-    # Branch: Single liquid
-    single_node = SingleLiquidNode()
-    single_node.add_child("model_says_gel", ModelSaysGelNode())
-    single_node.add_child("model_says_stable", ModelSaysStableNode())
-    single_node.add_child("unclear_liquid", UnclearLiquidNode())
-    root.add_child("single_liquid", single_node)
+    # Single with air
+    single_with_air = SingleWithAirNode()
+    single_with_air.add_child("gel_dominant", GelDominantNode())
+    single_with_air.add_child("stable_dominant", StableDominantNode())
+    single_with_air.add_child("mixed_liquid", MixedLiquidNode())
+    single_liquid.add_child("single_with_air", single_with_air)
 
-    # Fallback
-    root.add_child("unknown", NoDetectionsNode())
+    # Single no air
+    single_no_air = SingleNoAirNode()
+    single_no_air.add_child("no_air_with_lines", NoAirWithLinesNode())
+    single_no_air.add_child("no_air_with_curve", NoAirWithCurveNode())
+    single_no_air.add_child("no_air_with_single_line", NoAirWithSingleLineNode())
+    single_no_air.add_child("no_indicators", NoAirNoIndicatorsNode())
+    single_liquid.add_child("single_no_air", single_no_air)
+
+    # Multiple liquids
+    multi = MultipleLiquidsNode()
+    multi_with_air = MultipleWithAirNode()
+    multi_no_air = MultipleNoAirNode()
+    multi.add_child("multiple_with_air", multi_with_air)
+    multi.add_child("multiple_no_air", multi_no_air)
+    # allow re-route to existing single_liquid logic after reclassification
+    multi_no_air.add_child("route_single", single_liquid)
+    root.add_child("multiple_liquids", multi)
 
     return root
 
@@ -513,76 +883,30 @@ def build_decision_tree() -> DecisionNode:
 # ============================================================================
 # CLASSIFIER
 # ============================================================================
-
 class VialStateClassifierV2:
-    """Hierarchical classifier using decision tree."""
+    """V2 classifier using decision tree."""
 
     def __init__(self):
-        self.tree = build_decision_tree()
+        """Initialize classifier with decision tree."""
+        self.root = _build_tree()
 
     def classify(self,
-                 crop_path: Path,
-                 label_path: Path,
-                 collect_line_analysis: bool = True,
-                 collect_curve_analysis: bool = True) -> Dict[str, Any]:
+                crop_path: Path,
+                label_path: Optional[Path] = None) -> Dict[str, Any]:
         """
-        Classify vial state using hierarchical decision tree.
+        Classify vial state from crop and optional labels.
 
         Args:
-            crop_path: Path to crop image
-            label_path: Path to detection labels
-            collect_line_analysis: Whether to run line detection
-            collect_curve_analysis: Whether to run curve analysis
+            crop_path: Path to cropped vial image
+            label_path: Optional path to YOLO label file
 
         Returns:
-            Classification result dictionary
+            Dictionary with classification results
         """
-        # If label_path not exist or is empty, run liquid detection on the single crop
-        if not label_path.exists() or label_path.stat().st_size == 0:
-            # Initialize the detector
-            detector = LiquidDetector(
-                weights_path=LIQUID_DETECTOR.get("liquid_weights", "liquid/best_renamed"),
-                task=LIQUID_DETECTOR.get("liquid_task", "detect"),
-                img_size=LIQUID_DETECTOR.get("liquid_img_size", 640),
-                conf_threshold=LIQUID_DETECTOR.get("liquid_conf", 0.45),
-                iou_threshold=LIQUID_DETECTOR.get("liquid_iou", 0.50)
-            )
+        # Collect evidence
+        evidence = self._collect_evidence(crop_path, label_path)
 
-            # Run detection on the single crop image
-            temp_out = Path('/tmp/liquid_detect')  # temp output dir
-            temp_out.mkdir(parents=True, exist_ok=True)
-
-            results_dir = detector.run_detection(
-                source_dir=crop_path,
-                output_dir=temp_out,
-                save_txt=True,
-                save_conf=True,
-                save_img=False
-            )
-
-            # place generated .txt file to labels dir
-            labels_dir = results_dir / 'labels'
-            generated_label = labels_dir / f"{crop_path.stem}.txt"
-
-            if generated_label.exists():
-                # Copy to expected label_path
-                shutil.copy(generated_label, label_path)
-            else:
-                # No detections found; create an empty label file to proceed
-                label_path.touch()
-
-            # Clean up temp dir
-            shutil.rmtree(temp_out)
-
-        # Collect all evidence
-        evidence = self._collect_evidence(
-            crop_path=crop_path,
-            label_path=label_path,
-            collect_lines=collect_line_analysis,
-            collect_curve=collect_curve_analysis
-        )
-
-        # Traverse decision tree
+        # Traverse tree
         decision = self._traverse_tree(evidence)
 
         # Format output
@@ -598,119 +922,152 @@ class VialStateClassifierV2:
             "decision_path": " -> ".join(decision.node_path)
         }
 
-    def _collect_evidence(self, crop_path: Path, label_path: Path,
-                          collect_lines: bool, collect_curve: bool) -> Evidence:
-        """
-        Gather all evidence from model.
-        """
+
+    def _recompute_evidence_counts(self, ev: Evidence) -> None:
+        ev.liquid_count = sum(1 for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
+        ev.gel_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+        ev.stable_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['STABLE'])
+        ev.air_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR'])
+
+        ev.total_liquid_area = sum(d['area'] for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
+        gel_area = sum(d['area'] for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+        ev.gel_area_fraction = (gel_area / ev.total_liquid_area) if ev.total_liquid_area > 0 else 0.0
+
+
+    def _collect_evidence(self,
+                         crop_path: Path,
+                         label_path: Optional[Path] = None) -> Evidence:
+        """Collect all evidence from detections and analyzers."""
+        if not crop_path.exists():
+            raise FileNotFoundError(f"Crop image not found: {crop_path}")
+
+        # Load image for geometry
         img = cv2.imread(str(crop_path))
-        H, W = img.shape[:2] if img is not None else (0, 0)
+        if img is None:
+            raise ValueError(f"Failed to load image: {crop_path}")
+
+        height, width = img.shape[:2]
 
         # Parse detections
-        detections = parse_detections(label_path, W, H)
+        detections = parse_detections(label_path, width, height) if label_path and label_path.exists() else []
 
-        # parse & filter detections
-        # detections = []
-        # if label_path.exists():
-        #     with open(label_path) as f:
-        #         for line in f:
-        #             parsed = yolo_line_to_xyxy(line.strip(), W, H)
-        #             if not parsed: continue
-        #             cls_id, box, conf = parsed
-        #             if conf < DETECTION_FILTERS["conf_min"]: continue
-        #             area = box_area(box)
-        #             if area < DETECTION_FILTERS["min_liquid_area_frac"] * (W * H) and cls_id in LIQUID_CLASSES:
-        #                 continue
-        #             detections.append({'class_id': cls_id, 'box': box, 'confidence': conf, 'area': area})
+        # Filter low confidence
+        detections = [d for d in detections if d['confidence'] > DETECTION_FILTERS["conf_min"]]
 
-        # counts & areas
-        liquid_count = sum(1 for d in detections if d['class_id'] in LIQUID_CLASSES)
+        # Recalculate after correction
         gel_count = sum(1 for d in detections if d['class_id'] == CLASS_IDS['GEL'])
         stable_count = sum(1 for d in detections if d['class_id'] == CLASS_IDS['STABLE'])
         air_count = sum(1 for d in detections if d['class_id'] == CLASS_IDS['AIR'])
+        liquid_count = gel_count + stable_count
+
+        # Define areas
         total_liquid_area = sum(d['area'] for d in detections if d['class_id'] in LIQUID_CLASSES)
         gel_area = sum(d['area'] for d in detections if d['class_id'] == CLASS_IDS['GEL'])
         gel_area_fraction = gel_area / total_liquid_area if total_liquid_area > 0 else 0.0
 
-        ev = Evidence(
+        # Geometry
+        cap_level_y = int(height * LINE_RULES["cap_level_frac"])  # from top
+        interior_width = width
+
+        # Line detection
+        detector = LineDetector(
+            min_line_length=LINE_PARAMS["min_line_length"],
+            merge_threshold=LINE_PARAMS["merge_threshold"],
+            horiz_kernel_div=LINE_PARAMS["horiz_kernel_div"],
+            vert_kernel_div=LINE_PARAMS["vert_kernel_div"],
+            adaptive_block=LINE_PARAMS["adaptive_block"],
+            adaptive_c=LINE_PARAMS["adaptive_c"],
+            min_line_strength=LINE_PARAMS["min_line_strength"]
+        )
+        line_result = detector.detect(image_path=crop_path,
+                                      top_exclusion=LINE_PARAMS["top_exclusion"],
+                                      bottom_exclusion=LINE_PARAMS["bottom_exclusion"]
+                                      )
+
+        # Extract horizontal line data
+        horizontal_lines = (line_result.get("horizontal_lines") or {}).get("lines") or []
+        vertical_lines = (line_result.get("vertical_lines") or {}).get("lines") or []
+        num_horizontal_lines = len(horizontal_lines)
+        num_vertical_lines = len(vertical_lines)
+        # Normalize y position
+        y_is_normalized = line_result.get("horizontal_lines", {}).get("y_normalized", False)
+        hline_y = [(l["y_position"] * height if y_is_normalized else l["y_position"]) for l in horizontal_lines]
+        # print("\nHLINEY\n", hline_y)
+        hline_len_frac = [l["x_length_frac"] for l in horizontal_lines]
+        hline_thickness = [l["thickness"] for l in horizontal_lines]
+        hline_x_start = [l["x_start"] for l in horizontal_lines]
+        hline_x_end = [l["x_end"] for l in horizontal_lines]
+
+        # Curve analysis
+        curve_result = run_curve_metrics(crop_path) or {}
+        curve_stats = curve_result.get("stats", {}) or {}
+        # print("\nCURVE RESULT\n", curve_result)
+        # print("\nCURVE STATS\n", curve_stats)
+        curve_variance = curve_stats.get("variance", curve_stats.get("variance_from_baseline", 0.0))
+        curve_std_dev = curve_stats.get("std_dev", curve_stats.get("std_dev_from_baseline", 0.0))
+        curve_roughness = curve_stats.get("roughness", 0.0)
+        # print("\nVariance\n", curve_variance)
+        # print("\nSTD DEV\n", curve_std_dev)
+        # print("\nROUGH\n", curve_roughness)
+
+        # Create evidence
+        evidence = Evidence(
             detections=detections,
-            liquid_count=liquid_count, gel_count=gel_count, stable_count=stable_count, air_count=air_count,
-            total_liquid_area=total_liquid_area, gel_area_fraction=gel_area_fraction,
-            image_height=H, image_width=W, vial_y_bottom=H, image_path=crop_path
+            liquid_count=liquid_count,
+            gel_count=gel_count,
+            stable_count=stable_count,
+            air_count=air_count,
+            total_liquid_area=total_liquid_area,
+            gel_area_fraction=gel_area_fraction,
+            image_height=height,
+            image_width=width,
+            cap_level_y=cap_level_y,
+            interior_width=interior_width,
+            horizontal_lines=line_result["horizontal_lines"],
+            vertical_lines=line_result["vertical_lines"],
+            num_horizontal_lines=num_horizontal_lines,
+            num_vertical_lines=num_vertical_lines,
+            hline_y=hline_y,
+            hline_len_frac=hline_len_frac,
+            hline_line_thickness=hline_thickness,
+            hline_x_start=hline_x_start,
+            hline_x_end=hline_x_end,
+            curve_stats=curve_stats,
+            curve_variance=curve_variance,
+            curve_std_dev=curve_std_dev,
+            curve_roughness=curve_roughness,
+            image_path=crop_path
         )
 
-        # lines
-        if collect_lines and crop_path.exists():
-            # init line detector with config params
-            det = LineDetector(
-                horiz_kernel_div=LINE_PARAMS.get("horiz_kernel_div", 15),
-                vert_kernel_div=LINE_PARAMS.get("vert_kernel_div", 30),
-                adaptive_block=LINE_PARAMS.get("adaptive_block", 15),
-                adaptive_c=LINE_PARAMS.get("adaptive_c", -2),
-                min_line_length=LINE_PARAMS.get("min_line_length", 0.3),
-                min_line_strength=LINE_PARAMS.get("min_line_strength", 0.1),
-                merge_threshold=LINE_PARAMS.get("merge_threshold", 0.1),
-            )
-            result = det.detect(crop_path, bottom_exclusion=LINE_PARAMS.get("bottom_exclusion", 0.15),
-                                top_exclusion=LINE_PARAMS.get("top_exclusion", 0.30))
-            ev.horizontal_lines = result.get('horizontal_lines', {})
-            ev.vertical_lines = result.get('vertical_lines', {})
-            ev.num_horizontal_lines = ev.horizontal_lines.get('num_lines', 0)
-            ev.num_vertical_lines = ev.vertical_lines.get('num_lines', 0)
+        # print("\nEVIDENCE\n", evidence)
+        # print("\nAIR BEFORE\n", evidence.air_count)
+        # print("\nLIQUIDS BEFORE\n", evidence.liquid_count)
+        # print("\nGEL BEFORE\n", evidence.gel_count)
 
-            # vial walls from verticals
-            xL = ev.vertical_lines.get('x_left')
-            xR = ev.vertical_lines.get('x_right')
-            if xL is not None and xR is not None and xR > xL:
-                ev.vial_xL, ev.vial_xR = int(xL), int(xR)
-                ev.interior_width = int(xR - xL)
-                ev.vial_y_top = 0
-                cap_frac = LINE_RULES["cap_level_frac"]
-                ev.cap_level_y = int(cap_frac * H)
+        _apply_air_placement_rules(evidence)
+        self._recompute_evidence_counts(evidence)
 
-            # horizontal line features
-            lines = ev.horizontal_lines.get('lines', [])
-            for L in lines:
-                ev.hline_y.append(L.get('y_position', 0))
-                ev.hline_len_frac.append(L.get('x_length_frac', 0.0))
-                ev.hline_x_start.append(L.get('x_start', 0.0))
-                ev.hline_x_end.append(L.get('x_end', 0.0))
-                ev.hline_line_thickness.append(L.get('thickness', 0.0))
+        # print("\nAIR AFTER\n", evidence.air_count)
+        # print("\nLIQUIDS AFTER\n", evidence.liquid_count)
+        # print("\nGEL AFTER\n", evidence.gel_count)
 
-        # curve
-        if collect_curve and crop_path.exists():
-            c = run_curve_metrics(crop_path) or {}
-            stats = c.get('stats', {}) or {}
-            ev.curve_stats = stats
-            ev.curve_variance = stats.get('variance') or stats.get('variance_from_baseline') or 0.0
-            ev.curve_std_dev = stats.get('std') or stats.get('std_dev_from_baseline') or 0.0
-            ev.curve_roughness = stats.get('roughness', 0.0)
-
-        # merge liquid fragments
-        liquid_xyxy = [d['box'] for d in detections if d['class_id'] in LIQUID_CLASSES]
-        ev.liquid_count = len(liquid_xyxy)
-
-        return ev
+        return evidence
 
     def _traverse_tree(self, evidence: Evidence) -> Decision:
-        """Traverse decision tree until reaching terminal node."""
-        current_node = self.tree
+        """Traverse the tree from root."""
+        current_node = self.root
         path = []
-        max_depth = 20  # Prevent infinite loops
         depth = 0
+        max_depth = 20  # prevent infinite loops
 
         while depth < max_depth:
             next_key, decision = current_node.evaluate(evidence, path)
 
-            # Terminal node reached
             if decision is not None:
+                # Terminal node
                 return decision
 
-            # Move to next node
-            if next_key and next_key in current_node.children:
-                current_node = current_node.children[next_key]
-                depth += 1
-            else:
+            if next_key not in current_node.children:
                 # No valid path, return unknown
                 return Decision(
                     state=VialState.UNKNOWN,
@@ -718,6 +1075,9 @@ class VialStateClassifierV2:
                     reasoning=[f"Tree traversal failed at {current_node.name}"],
                     node_path=path
                 )
+
+            current_node = current_node.children[next_key]
+            depth += 1
 
         # Max depth exceeded
         return Decision(
@@ -729,16 +1089,16 @@ class VialStateClassifierV2:
 
 
 def export_tree_graphviz(
-    root: DecisionNode,
-    out_dot: Union[Path, str],
-    out_png: Optional[Union[Path, str]] = None,
-    title: str = "Vial State Decision Tree",
-    highlight_path: Optional[List[str]] = None,
-) -> Digraph:
+        root: DecisionNode,
+        out_dot: Union[Path, str],
+        out_png: Optional[Union[Path, str]] = None,
+        title: str = "Vial State Decision Tree",
+        highlight_path: Optional[List[str]] = None,
+    ) -> Digraph:
     """
     Export the DecisionNode tree as Graphviz DOT/PNG.
 
-    highlight_path: list of node names visited in order (e.g., decision.node_path).
+    highlight_path: list of node names visited in order.
                     When provided, those nodes and their connecting edges are highlighted.
     """
     dot = Digraph(name="VialStateTree", format="png")
@@ -754,7 +1114,8 @@ def export_tree_graphviz(
 
     # build parent->child-name->key map for edge highlighting
     edge_in_path: set[tuple[str, str]] = set()
-    if highlight_path and len(highlight_path) >= 2:
+
+    if highlight_path and len(highlight_path) >= 1:
         # walk down root using names
         name_to_nodes: dict[str, list[DecisionNode]] = {}
 
