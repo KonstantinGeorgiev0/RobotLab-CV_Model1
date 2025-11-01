@@ -436,8 +436,16 @@ class MultipleNoAirNode(DecisionNode):
             idx = int(np.argmax(evidence.hline_len_frac))
             interface_y = evidence.hline_y[idx]
 
+        # how much space left on top
+        headspace_frac = y1 / float(H)
+        min_headspace = REGION_RULES.get("min_headspace_frac", 0.10)
+        has_headspace = headspace_frac >= min_headspace
+        print("\nHEADSPACE\n", headspace_frac)
+        print("\nHEADSPACE\n", min_headspace)
+        print("\nHEADSPACE\n", has_headspace)
+
         # Case 1: likely AIR FP (top-most liquid actually AIR)
-        if near_top and (evidence.num_horizontal_lines == 1 or spans_deep):
+        if near_top and not has_headspace and (evidence.num_horizontal_lines == 1 or spans_deep):
             # Reclassify top-most liquid as AIR and trim to interface
             top_liq['class_id'] = CLASS_IDS['AIR']
             top_liq['reclassified_from'] = 'LIQUID→AIR (near_top + 1 line or deep span)'
@@ -504,6 +512,49 @@ class SingleWithAirNode(DecisionNode):
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
+
+        # check for skipped layer
+        height = max(1, evidence.image_height)
+        vert_gap_frac = REGION_RULES.get("vertical_gap_frac", 0.0)
+
+        # pick liquid and air det
+        air_dets = [d for d in evidence.detections if d['class_id'] == CLASS_IDS['AIR']]
+        liquid_dets = [d for d in evidence.detections if d['class_id'] in LIQUID_CLASSES]
+
+        if len(air_dets) > 0 and len(liquid_dets) > 0:
+            # top-most AIR
+            air_det = min(air_dets, key=lambda d: d['box'][1])
+            liq_det = liquid_dets[0]
+
+            air_bottom = float(air_det['box'][3])
+            liq_top    = float(liq_det['box'][1])
+
+            print("\nPIXELS\n", air_bottom, liq_top)
+
+            # gap only when space between regions
+            gap_px = max(0.0, liq_top - air_bottom)
+            gap_frac = gap_px / height
+            print("\nGAPS\n", gap_px, gap_frac)
+
+            if gap_frac >= vert_gap_frac:
+                # use line detection for confidence
+                conf = Confidence.HIGH if evidence.num_horizontal_lines >= 2 else Confidence.MEDIUM
+                reasoning = [
+                    "Single liquid + AIR detected",
+                    f"Vertical gap between AIR bottom and LIQUID top = {gap_frac*100:.1f}% (≥ {vert_gap_frac*100:.1f}%)",
+                    "Likely missing middle layer → Phase separation"
+                ]
+                return None, Decision(
+                    state=VialState.PHASE_SEPARATED,
+                    confidence=conf,
+                    reasoning=reasoning,
+                    evidence_summary={
+                        "gap_frac": round(gap_frac, 4),
+                        "gap_px": int(gap_px),
+                        "num_horizontal_lines": evidence.num_horizontal_lines
+                    },
+                    node_path=path.copy()
+                )
 
         if evidence.gel_count > evidence.stable_count:
             return "gel_dominant", None
@@ -713,7 +764,7 @@ def _apply_air_placement_rules(ev: Evidence) -> None:
     # choose longest horizontal line
     interface_y = None
     if ev.hline_y:
-        print("\n interface_y REACHED \n")
+        # print("\n interface_y REACHED \n")
         try:
             idx = int(np.argmax(ev.hline_len_frac))
         except Exception:
@@ -743,15 +794,40 @@ def _apply_air_placement_rules(ev: Evidence) -> None:
     air_dets = [d for d in ev.detections if d['class_id'] == CLASS_IDS['AIR']]
     if len(air_dets) > 0:
         print("\nAIR Present REACHED\n")
-        # if multiple AIR, keep only top-most AIR region
+        # # if multiple AIR, keep only top-most AIR region
+        # if len(air_dets) > 1:
+        #     top_air = min(air_dets, key=lambda d: d['box'][1])
+        #     for d in air_dets:
+        #         if d is top_air:
+        #             continue
+        #         d['class_id'] = most_likely_liquid_class()
+        #     recompute_counts()
+        #     air_dets = [top_air]
+
+        # AIR deduplication
         if len(air_dets) > 1:
-            top_air = min(air_dets, key=lambda d: d['box'][1])
-            for d in air_dets:
-                if d is top_air:
-                    continue
-                d['class_id'] = most_likely_liquid_class()
-            recompute_counts()
-            air_dets = [top_air]
+            # discard small ones (area fraction < 1% of image)
+            min_area = 0.05 * (ev.image_width * ev.image_height)
+            air_valid = [d for d in air_dets if d['area'] >= min_area]
+
+            # discard those entirely in bottom of image
+            h_thr = 0.5 * ev.image_height
+            air_valid = [d for d in air_valid if d['box'][1] < h_thr]
+
+            if air_valid:
+                # pick the one with largest area
+                best_air = max(air_valid, key=lambda d: d['area'])
+                for d in air_dets:
+                    if d is not best_air:
+                        d['class_id'] = most_likely_liquid_class()
+                ev.air_count = 1
+            else:
+                # fallback: keep top-most if everything was filtered
+                top_air = min(air_dets, key=lambda d: d['box'][1])
+                for d in air_dets:
+                    if d is not top_air:
+                        d['class_id'] = most_likely_liquid_class()
+                ev.air_count = 1
 
         air = air_dets[0]
         y1, y2 = air['box'][1], air['box'][3]
