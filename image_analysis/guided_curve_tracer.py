@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import cv2
 from typing import Optional, Tuple
+from scipy.signal import savgol_filter
 
 # Import existing modules
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -53,66 +54,117 @@ class GuidedCurveTracer:
         Trace curved liquid-air interface.
 
         Args:
-            img_bgr: Input BGR image
-            guide_y: Optional normalized y-position (0-1) to guide search.
-                    If None, will use horizontal line detection.
+            img_bgr: input BGR image
+            img_path: kept for compatibility (used by _detect_guide_line if guide_y is None)
+            guide_y: optional normalized guide in [0,1]. If None, detected from image.
 
         Returns:
-            Tuple of (x_coords, y_coords, metadata)
-            :param img_path:
+            (xs, ys_smooth, metadata)
         """
+        assert img_bgr is not None and img_bgr.size > 0, "empty image"
         H, W = img_bgr.shape[:2]
 
-        # Detect horizontal line if guide not provided
+        # 1) guide line (normalized -> pixels)
         if guide_y is None:
-            guide_y = self._detect_guide_line(img_bgr, img_path)
+            guide_y = self._detect_guide_line(img_bgr, img_path)  # expected to return normalized [0,1]
+        guide_y = float(np.clip(guide_y, 0.0, 1.0))
+        guide_y_px = int(round(guide_y * H))
 
-        # Convert guide to pixel coordinates
-        guide_y_px = int(guide_y * H)
+        # 2) ROI + search region (intersect vertical ROI with ±offset around guide)
+        top_frac, bot_frac = self.vertical_bounds
+        left_frac, right_frac = self.horizontal_bounds
+        y_roi_top = max(0, int(H * top_frac))
+        y_roi_bot = min(H, int(H * bot_frac))
+        x_min_px = max(0, int(W * left_frac))
+        x_max_px = min(W, int(W * right_frac))
+        x_min_px = min(x_min_px, W - 1)
+        x_max_px = max(x_min_px + 1, x_max_px)
 
-        # Define search region
-        x_min_px = int(self.horizontal_bounds[0] * W)
-        x_max_px = int(self.horizontal_bounds[1] * W)
+        search_offset_px = max(2, int(self.search_offset_frac * H))
+        y_min_search = max(y_roi_top, guide_y_px - search_offset_px)
+        y_max_search = min(y_roi_bot - 1, guide_y_px + search_offset_px)
 
-        # Convert frac to px
-        search_offset_px = int(self.search_offset_frac * H)
-        y_min_search = max(0, guide_y_px - search_offset_px)
-        y_max_search = min(H - 1, guide_y_px + search_offset_px)
+        # 3) luminance-like channel + mild denoise
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)[:, :, 0]
+        gray = cv2.bilateralFilter(gray, d=5, sigmaColor=20, sigmaSpace=5)
 
-        # Extract edges optimized for curved interface
-        edges = extract_edges_for_curve_detection(img_bgr)
+        # 4) column-wise tracing with polarity + continuity
+        xs = np.arange(x_min_px, x_max_px, dtype=np.int32)
+        ys = np.zeros_like(xs, dtype=np.float32)
 
-        # Trace curve column by column
-        xs, ys = self._trace_columns(
-            edges,
-            x_min_px, x_max_px,
-            y_min_search, y_max_search,
-            guide_y_px
-        )
+        # starting point clamped to search band
+        prev_y = float(np.clip(guide_y_px, y_min_search, y_max_search))
+        band = max(2, int(self.search_offset_frac * H))  # local band around prev_y each column
+        max_step = max(1, int(self.max_step_px))  # continuity limiter (e.g., 4 px)
 
-        # Smooth and denoise
-        ys_smooth = self._smooth_curve(ys)
-        y_variance = np.var(ys_smooth)
-        deviations_from_guide = ys_smooth - guide_y_px
-        variance_from_baseline = np.var(deviations_from_guide)
-        std_dev_from_baseline = np.std(deviations_from_guide)
-        rms_deviation = np.sqrt(np.mean(deviations_from_guide ** 2))
+        # choose expected edge polarity (bright→dark typical for upper edge; flip if your setup differs)
+        want_neg = True
 
-        # Prepare metadata
+        for i, x in enumerate(xs):
+            y0 = int(round(prev_y))
+            ymin = max(y_min_search, y0 - band)
+            ymax = min(y_max_search, y0 + band)
+            if ymax <= ymin:
+                ys[i] = prev_y
+                continue
+
+            col = gray[ymin:ymax + 1, x].astype(np.float32)
+
+            # vertical gradient: [-1, 0, 1]/2
+            dy = np.convolve(col, np.array([-1., 0., 1.], np.float32) * 0.5, mode="same")
+
+            # polarity mask + adaptive magnitude threshold (top 15% strongest in band)
+            mask = (dy < 0) if want_neg else (dy > 0)
+            thr = np.percentile(np.abs(dy), 85) if dy.size > 0 else 0.0
+            cand_idx = np.where(mask & (np.abs(dy) >= thr))[0]
+
+            if cand_idx.size:
+                k = int(cand_idx[np.argmax(np.abs(dy[cand_idx]))])
+                y_pick = float(ymin + k)
+            else:
+                # fallback to nearest-to-guide within the band
+                y_pick = float(np.clip(y0, ymin, ymax))
+
+            # continuity: limit per-column step
+            if i > 0 and abs(y_pick - prev_y) > max_step:
+                y_pick = prev_y + np.sign(y_pick - prev_y) * max_step
+
+            ys[i] = y_pick
+            prev_y = y_pick
+
+        # 5) de-spike + smooth
+        ys_smooth = self._smooth_trace_1d(ys)
+
+        # 6) scoring: robust waviness + also keep legacy stats relative to guide for compatibility
+        scores = self._score_waviness(ys_smooth, H)
+
+        # legacy (baseline = guide_y_px), kept for compatibility with existing consumers
+        deviations_from_guide = ys_smooth - float(guide_y_px)
+        y_variance = float(np.var(ys_smooth))
+        variance_from_baseline = float(np.var(deviations_from_guide))
+        std_dev_from_baseline = float(np.std(deviations_from_guide))
+        rms_deviation = float(np.sqrt(np.mean(deviations_from_guide ** 2)))
+
+        # metadata (preserve old keys + add new robust ones)
         metadata = {
-            'y_variance': float(y_variance),
-            'std_dev_from_baseline': float(std_dev_from_baseline),
-            'variance_from_baseline': float(variance_from_baseline),
-            'rms_deviation': float(rms_deviation),
+            'y_variance': y_variance,
+            'std_dev_from_baseline': std_dev_from_baseline,
+            'variance_from_baseline': variance_from_baseline,
+            'rms_deviation': rms_deviation,
             'guide_y_normalized': float(guide_y),
-            'guide_y_px': guide_y_px,
+            'guide_y_px': int(guide_y_px),
             'search_region': {
-                'x_range_px': (x_min_px, x_max_px),
-                'y_range_px': (y_min_search, y_max_search)
+                'x_range_px': (int(x_min_px), int(x_max_px)),
+                'y_range_px': (int(y_min_search), int(y_max_search)),
             },
             'horizontal_bounds': self.horizontal_bounds,
             'vertical_bounds': self.vertical_bounds,
-            'num_points': len(xs),
+            'num_points': int(len(xs)),
+            'abs_variance': float(np.var(ys_smooth)),
+            'resid_rms_px': float(scores['resid_rms_px']),
+            'resid_rms_norm': float(scores['resid_rms_norm']),
+            'resid_var_px2': float(scores['resid_var_px2']),
+            'poly_slope_px_per_col': float(scores['slope_px_per_col']),
         }
 
         return xs, ys_smooth, metadata
@@ -234,6 +286,76 @@ class GuidedCurveTracer:
 
         return ys_smooth
 
+    def _smooth_trace_1d(self, y: np.ndarray) -> np.ndarray:
+        """
+        Remove solitary spikes and gently smooth the 1D trace.
+        Returns float array, same length as input.
+        """
+        y = y.astype(np.float32, copy=True)
+        n = len(y)
+        if n < 7:
+            return y
+
+        # median filter to kill 1–2 px outliers
+        k_med = min(9, (n // 40) | 1)
+        if k_med >= 3:
+            pad = k_med // 2
+            yp = np.pad(y, (pad,), mode="edge")
+            y = np.array([np.median(yp[i - pad:i + pad + 1]) for i in range(pad, len(yp) - pad)], np.float32)
+
+        # Savitzky–Golay smoothing to keep gentle curvature
+        try:
+            win = max(9, (n // 50) | 1)
+            win = min(win, n - (n + 1) % 2 - 1) if n % 2 == 0 else min(win, n)
+            win = max(5, win | 1)
+            y = savgol_filter(y, window_length=win, polyorder=2, mode="interp").astype(np.float32)
+        except Exception:
+            # fallback: simple moving average
+            win = max(5, (n // 60) | 1)
+            pad = win // 2
+            yp = np.pad(y, (pad,), mode="edge")
+            y = np.convolve(yp, np.ones(win, np.float32) / win, mode="valid").astype(np.float32)
+
+        return y
+
+    def _score_waviness(self, y: np.ndarray, H: int) -> dict:
+        """
+        Compute robust roughness metrics:
+        - detrended residual RMS/VAR on middle of the trace
+        - also return the fitted slope for debugging
+        """
+        y = y.astype(np.float64, copy=False)
+        n = len(y)
+        if n < 10:
+            return dict(resid_rms_px=0.0, resid_rms_norm=0.0, resid_var_px2=0.0, slope_px_per_col=0.0)
+
+        # crop away side walls
+        lo = int(0.10 * n)
+        hi = int(0.90 * n)
+        yc = y[lo:hi]
+        xc = np.arange(lo, hi, dtype=np.float64)
+
+        # linear detrend
+        a, b = np.polyfit(xc, yc, 1)
+        trend = a * xc + b
+        resid = yc - trend
+
+        # robust outlier clipping
+        med = np.median(resid)
+        mad = np.median(np.abs(resid - med)) + 1e-6
+        resid = np.clip(resid, med - 3 * mad, med + 3 * mad)
+
+        rms_px = float(np.sqrt(np.mean(resid ** 2)))
+        var_px2 = float(np.var(resid))
+        rms_n = float(rms_px / max(1.0, H))
+
+        return dict(
+            resid_rms_px=rms_px,
+            resid_rms_norm=rms_n,
+            resid_var_px2=var_px2,
+            slope_px_per_col=float(a),
+        )
+
     def _rolling_median(self, y: np.ndarray, k: int) -> np.ndarray:
         """Apply rolling median filter."""
         k = max(3, k | 1)  # Ensure odd
@@ -354,7 +476,7 @@ def main():
     parser.add_argument("--bottom", type=float, default=0.90, help="Bottom boundary (fraction)")
     parser.add_argument("--left", type=float, default=0.05, help="Left boundary (fraction)")
     parser.add_argument("--right", type=float, default=0.95, help="Right boundary (fraction)")
-    parser.add_argument("--search-offset", type=int, default=0.05,
+    parser.add_argument("--search-offset", type=float, default=0.05,
                         help="Vertical search offset around guide line (pixels)")
     parser.add_argument("--median-k", type=int, default=9, help="Median filter kernel size")
     parser.add_argument("--max-step", type=int, default=4, help="Max step between points (pixels)")
@@ -388,6 +510,9 @@ def main():
     print(f"  Guide y-position: {metadata['guide_y_normalized']:.3f}")
     print(f"  Y-range: [{ys.min():.1f}, {ys.max():.1f}] px")
     print(f"  Y-variance: {np.var(ys):.2f}")
+    print(f"  residual_variance_px2: {metadata['resid_var_px2']:.3f}")
+    print(f"  resid_rms_px: {metadata['resid_rms_px']:.3f}")
+    print(f"  poly_slope_px_per_col: {metadata['poly_slope_px_per_col']:.3f}")
 
     # Create output directory
     outdir = Path(args.outdir)

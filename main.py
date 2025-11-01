@@ -39,14 +39,14 @@ from yolov5.utils.torch_utils import select_device
 # Custom modules
 from config import DEFAULT_PATHS, LIQUID_DETECTOR, VIAL_DETECTOR, CURVE_PARAMS, LINE_PARAMS
 # from analysis.state_classifier import VialStateClassifier
-from analysis.classification_tree import VialStateClassifierV2
+from analysis.classification_tree import VialStateClassifierV2, export_tree_graphviz
 # from analysis.classification_tree_old import VialStateClassifierV2
 from analysis.turbidity_analysis import compute_turbidity_profile, analyze_region_turbidity
 from visualization.turbidity_viz import save_enhanced_turbidity_plot, create_detection_visualization
 from robotlab_utils.image_utils import resize_keep_height
 from robotlab_utils.bbox_utils import expand_and_clamp
 from visualization.detection_visualization import create_filtered_detection_visualization, create_line_visualization, \
-    create_curve_visualization, export_tree_graphviz
+    create_curve_visualization
 
 
 class VialDetectionPipeline:
@@ -410,6 +410,8 @@ class VialDetectionPipeline:
                     node_path_list = state_info.get("decision_path", [])
                     # highlight the path that the image took
                     path_nodes = [s.strip() for s in node_path_list.split("->")] if node_path_list else None
+
+                    print("\nDECISION PATH:\n", node_path_list)
 
                     # export DOT + PNG
                     dot_path = tree_dir / f"{stem}_tree.dot"

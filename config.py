@@ -138,6 +138,8 @@ REGION_RULES = {
     "bottom_touch_pad_px": 6,           # bottom reach padding
     "air_top_touch_frac": 0.25,         # touches top
     "air_deep_span_frac": 0.75,         # spans deep down the vial
+    "min_headspace_frac": 0.15,         # minimum headspace fraction required
+    "vertical_gap_frac": 0.075,              # vertical gap between AIR bottom and LIQUID top
 }
 
 DETECTION_FILTERS = {
