@@ -10,7 +10,7 @@ import sys
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from robotlab_utils.bbox_utils import yolo_line_to_xyxy, box_area
+from robotlab_utils.bbox_utils import yolo_line_to_xyxy, box_area, clamp_order_xyxy
 from config import DETECTION_FILTERS, LIQUID_CLASSES
 
 
@@ -40,6 +40,8 @@ def parse_detections(label_path: Path, W: int, H: int) -> List[Dict[str, Any]]:
                     continue
 
                 cls_id, box, conf = parsed
+                # clamp box coordinates to img bounds
+                box = clamp_order_xyxy(box, W, H)
 
                 # Filter by minimum confidence
                 if conf < DETECTION_FILTERS["conf_min"]:

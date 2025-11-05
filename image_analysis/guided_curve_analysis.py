@@ -118,8 +118,16 @@ class CurveAnalyzer:
         mad = float(np.median(np.abs(deviations)))
 
         # Distribution statistics
-        skewness = float(scipy_stats.skew(ys))
-        kurtosis = float(scipy_stats.kurtosis(ys))
+        eps = 1e-12
+        y_std = float(np.std(ys))
+        if not np.isfinite(y_std) or y_std < eps:
+            # Degenerate flat curve
+            skewness = 0.0
+            kurtosis = 0.0
+        else:
+            # Use unbiased estimators and ignore potential NaNs
+            skewness = float(scipy_stats.skew(ys, bias=False, nan_policy='omit'))
+            kurtosis = float(scipy_stats.kurtosis(ys, fisher=True, bias=False, nan_policy='omit'))
 
         # Trend analysis
         linear_stats = self._analyze_linear_trend(xs, ys)
@@ -274,28 +282,38 @@ class CurveAnalyzer:
         freqs = np.fft.rfftfreq(len(ys_centered))
 
         # Fourier descriptor analysis
-        xs = np.arange(len(ys))  # Assuming uniform spacing
+        # xs = np.arange(len(ys))  # Assuming uniform spacing
 
         # Compute frequency bands
-        total_power = np.sum(power)
-        low_freq_power = np.sum(power[:len(power) // 4]) / total_power
-        high_freq_power = np.sum(power[3 * len(power) // 4:]) / total_power
-
-        # Find dominant frequency (excluding DC)
-        if len(power) > 1:
-            dominant_idx = np.argmax(power[1:]) + 1
-            dominant_freq = float(freqs[dominant_idx])
-        else:
-            dominant_freq = 0.0
-
         # Total spectral energy
-        spectral_energy = float(total_power)
+        total_power = float(np.sum(power))
+
+        # Guard against division by zero
+        if not np.isfinite(total_power) or total_power <= 1e-12:
+            low_freq_power = 0.0
+            high_freq_power = 0.0
+            dominant_freq = 0.0
+            spectral_energy = 0.0
+        else:
+            # Low / high band ratios
+            n = len(power)
+            low_freq_power = float(np.sum(power[: n // 4]) / total_power)
+            high_freq_power = float(np.sum(power[3 * n // 4:]) / total_power)
+
+            # Dominant frequency
+            if n > 1:
+                dominant_idx = int(np.argmax(power[1:]) + 1)
+                dominant_freq = float(freqs[dominant_idx])
+            else:
+                dominant_freq = 0.0
+
+            spectral_energy = total_power
 
         return {
             'dominant_frequency': dominant_freq,
             'spectral_energy': spectral_energy,
-            'low_freq_ratio': float(low_freq_power),
-            'high_freq_ratio': float(high_freq_power),
+            'low_freq_ratio': low_freq_power,
+            'high_freq_ratio': high_freq_power,
             'fourier_smoothness': float(low_freq_power / (high_freq_power + 1e-8))
         }
 

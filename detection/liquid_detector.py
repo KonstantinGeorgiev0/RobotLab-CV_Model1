@@ -131,7 +131,8 @@ class LiquidDetector:
             '--project', str(output_dir),
             '--name', exp_name,
             '--exist-ok',
-            '--line-thickness', '1'
+            '--line-thickness', '1',
+            '--save-format', '0',
         ]
         
         # Add optional flags
