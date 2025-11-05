@@ -11,7 +11,7 @@ import cv2
 from graphviz import Digraph
 
 from detection.liquid_detector import LiquidDetector
-from robotlab_utils.bbox_utils import yolo_line_to_xyxy, box_area
+from robotlab_utils.bbox_utils import yolo_line_to_xyxy, box_area, expand_and_clamp, ensure_xyxy_px
 from image_analysis.line_hv_detection import LineDetector
 from analysis.gelled_analysis import run_curve_metrics
 from config import CLASS_IDS, LIQUID_CLASSES, CURVE_PARAMS, DETECTION_THRESHOLDS, DETECTION_FILTERS, LINE_RULES, \
@@ -510,39 +510,89 @@ class SingleWithAirNode(DecisionNode):
     def __init__(self):
         super().__init__("single_with_air", "Single liquid with air")
 
+    def _clamp_xyxy(self, box, W, H):
+        x1, y1, x2, y2 = map(float, box)
+        if x2 < x1: x1, x2 = x2, x1
+        if y2 < y1: y1, y2 = y2, y1
+        x1 = max(0.0, min(W - 1.0, x1))
+        y1 = max(0.0, min(H - 1.0, y1))
+        x2 = max(0.0, min(W - 1.0, x2))
+        y2 = max(0.0, min(H - 1.0, y2))
+        return [x1, y1, x2, y2]
+
+    def _primary_interface_y(self, evidence):
+        # prefer the longest horizontal line
+        hl = (evidence.horizontal_lines or {}).get("lines") or []
+        if not hl:
+            return None
+        # lines may already carry x_length_frac; fall back to thickness if needed
+        lens = [l.get("x_length_frac", 0.0) for l in hl]
+        idx = int(np.argmax(lens)) if lens else 0
+        y = hl[idx]["y_position"]
+        if (evidence.horizontal_lines or {}).get("y_normalized", False):
+            return float(y) * float(evidence.image_height)
+        return float(y)
+
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
 
-        # check for skipped layer
-        height = max(1, evidence.image_height)
-        vert_gap_frac = REGION_RULES.get("vertical_gap_frac", 0.0)
+        H = max(1, int(evidence.image_height))
+        W = max(1, int(evidence.image_width))
+        vert_gap_frac = REGION_RULES.get("vertical_gap_frac", 0.12)  # tolerate small bbox slack
+        touch_eps_px  = REGION_RULES.get("vertical_touch_eps_px", max(3, int(0.005 * H)))  # ~0.5% H
 
-        # pick liquid and air det
         air_dets = [d for d in evidence.detections if d['class_id'] == CLASS_IDS['AIR']]
         liquid_dets = [d for d in evidence.detections if d['class_id'] in LIQUID_CLASSES]
 
-        if len(air_dets) > 0 and len(liquid_dets) > 0:
-            # top-most AIR
+        if air_dets and liquid_dets:
+            # top-most AIR by y1
             air_det = min(air_dets, key=lambda d: d['box'][1])
-            liq_det = liquid_dets[0]
+            air_box = self._clamp_xyxy(air_det['box'], W, H)
 
-            air_bottom = float(air_det['box'][3])
-            liq_top    = float(liq_det['box'][1])
+            # choose the liquid that is directly below AIR (smallest y1 >= air_bottom - eps)
+            air_bottom = air_box[3]
+            cand = sorted(liquid_dets, key=lambda d: d['box'][1])
+            liq_det = None
+            for d in cand:
+                box = self._clamp_xyxy(d['box'], W, H)
+                if box[1] >= air_bottom - touch_eps_px:
+                    liq_det = d
+                    liq_box = box
+                    break
+            # if none found (all start above air_bottom due to jitter), take top-most liquid
+            if liq_det is None:
+                liq_det = cand[0]
+                liq_box = self._clamp_xyxy(liq_det['box'], W, H)
 
-            print("\nPIXELS\n", air_bottom, liq_top)
+            liq_top = liq_box[1]
 
-            # gap only when space between regions
-            gap_px = max(0.0, liq_top - air_bottom)
-            gap_frac = gap_px / height
-            print("\nGAPS\n", gap_px, gap_frac)
+            # snap to measured interface if available
+            interface_y = self._primary_interface_y(evidence)
+            if interface_y is not None:
+                # if interface lies between (or very near) the two edges, treat as touching
+                if (air_bottom - touch_eps_px) <= interface_y <= (liq_top + touch_eps_px):
+                    air_bottom = interface_y
+                    liq_top    = interface_y
 
-            if gap_frac >= vert_gap_frac:
-                # use line detection for confidence
-                conf = Confidence.HIGH if evidence.num_horizontal_lines >= 2 else Confidence.MEDIUM
+            raw_gap = liq_top - air_bottom
+            gap_px  = max(0.0, raw_gap - touch_eps_px)
+            gap_frac = gap_px / H
+
+            # if getattr(evidence, "debug", False):
+            print("\nAIR COORDS (clamped):", air_box)
+            print("LIQ COORDS (clamped):", liq_box)
+            print("interface_y:", interface_y, "touch_eps_px:", touch_eps_px)
+            print("RAW GAP / GAP PX / FRAC:", raw_gap, gap_px, gap_frac)
+
+            # require ≥2 interfaces to call phase separation from a vertical-gap heuristic
+            has_two_interfaces = evidence.num_horizontal_lines >= 2
+            if gap_frac >= vert_gap_frac and has_two_interfaces:
+                conf = Confidence.HIGH
                 reasoning = [
                     "Single liquid + AIR detected",
-                    f"Vertical gap between AIR bottom and LIQUID top = {gap_frac*100:.1f}% (≥ {vert_gap_frac*100:.1f}%)",
-                    "Likely missing middle layer → Phase separation"
+                    f"Vertical gap = {gap_frac*100:.1f}% (≥ {vert_gap_frac*100:.1f}%)",
+                    "≥2 horizontal interfaces detected",
+                    "Consistent with phase separation"
                 ]
                 return None, Decision(
                     state=VialState.PHASE_SEPARATED,
@@ -556,6 +606,10 @@ class SingleWithAirNode(DecisionNode):
                     node_path=path.copy()
                 )
 
+            # otherwise prefer stable when only one interface is present
+            return "stable_dominant", None
+
+        # no AIR or no LIQUID - delegate majority vote
         if evidence.gel_count > evidence.stable_count:
             return "gel_dominant", None
         elif evidence.stable_count > evidence.gel_count:
@@ -1029,6 +1083,40 @@ class VialStateClassifierV2:
 
         # Filter low confidence
         detections = [d for d in detections if d['confidence'] > DETECTION_FILTERS["conf_min"]]
+
+        # normalize detections and attach fractional geometry
+        norm_detections = []
+        img_area = float(width * height)
+
+        for det in detections:
+            # guarantee pxl xyxy
+            xyxy = ensure_xyxy_px(det, width, height)
+            x1, y1, x2, y2 = xyxy
+
+            # pixel geometry
+            w_px = max(0.0, x2 - x1)
+            h_px = max(0.0, y2 - y1)
+            area_px = w_px * h_px
+
+            # fractional geometry in [0..1]
+            box_frac = [x1 / width, y1 / height, x2 / width, y2 / height]
+            area_frac = (area_px / img_area) if img_area > 0 else 0.0
+            cx_frac = ((x1 + x2) * 0.5) / width
+            cy_frac = ((y1 + y2) * 0.5) / height
+
+            # uniform schema
+            det_norm = {
+                'class_id': det['class_id'],
+                'confidence': det.get('confidence', 1.0),
+                'box': [x1, y1, x2, y2],  # pixel coords for drawing & rules
+                'box_frac': box_frac,  # fractional coords
+                'area': area_px,  # pixel area
+                'area_frac': area_frac,  # fractional area
+                'center_frac': [cx_frac, cy_frac]  # ordering by height
+            }
+            norm_detections.append(det_norm)
+
+        detections = norm_detections
 
         # Recalculate after correction
         gel_count = sum(1 for d in detections if d['class_id'] == CLASS_IDS['GEL'])
