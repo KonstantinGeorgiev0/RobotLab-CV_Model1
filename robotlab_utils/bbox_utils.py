@@ -6,6 +6,75 @@ computing box metrics, and filtering detections.
 """
 
 from typing import List, Tuple, Dict, Optional, Any, Union
+from dataclasses import dataclass
+import numpy as np
+
+@dataclass
+class Letterbox:
+    gain: float       # scale factor applied during preprocess
+    pad: tuple[float, float]  # (pad_x, pad_y)
+
+def yolo_line_to_xyxy_px(line: str, W: int, H: int, normalized: bool=True):
+    parts = line.strip().split()
+    if len(parts) < 5:
+        return None
+    cls = int(parts[0]); cx, cy, w, h = map(float, parts[1:5])
+    conf = float(parts[5]) if len(parts) >= 6 else 1.0
+    if normalized:
+        cx *= W; cy *= H; w *= W; h *= H
+    x1 = cx - w/2; y1 = cy - h/2
+    x2 = cx + w/2; y2 = cy + h/2
+    return cls, [x1, y1, x2, y2], conf
+
+def undo_letterbox_xyxy(xyxy_net, lb: Letterbox):
+    x1,y1,x2,y2 = map(float, xyxy_net)
+    px,py = lb.pad
+    g = lb.gain if lb.gain != 0 else 1.0
+    return [(x1 - px)/g, (y1 - py)/g, (x2 - px)/g, (y2 - py)/g]
+
+def to_crop_space_xyxy(xyxy_src, crop_xyxy):
+    # crop_xyxy = [x0,y0,x1,y1] in source px; top-left offset is (x0,y0)
+    x0, y0 = float(crop_xyxy[0]), float(crop_xyxy[1])
+    x1,y1,x2,y2 = map(float, xyxy_src)
+    return [x1 - x0, y1 - y0, x2 - x0, y2 - y0]
+
+def scale_xyxy(xyxy, scale):
+    return [v * float(scale) for v in xyxy]
+
+def clamp_order_xyxy(xyxy, W: int, H: int):
+    x1, y1, x2, y2 = map(float, xyxy)
+    if x2 < x1: x1, x2 = x2, x1
+    if y2 < y1: y1, y2 = y2, y1
+    x1 = max(0.0, min(W - 1.0, x1))
+    y1 = max(0.0, min(H - 1.0, y1))
+    x2 = max(0.0, min(W - 1.0, x2))
+    y2 = max(0.0, min(H - 1.0, y2))
+    return [x1, y1, x2, y2]
+
+def ensure_xyxy_px(det: dict, W: int, H: int):
+    """
+    Accepts either:
+      - {'box': [x1,y1,x2,y2], 'confidence': ..., ...}  (pixel space)
+      - or YOLO-normalized {'cx','cy','w','h'} (fractions of the crop).
+    Returns pixel xyxy, clamped and ordered.
+    """
+    if 'box' in det and det['box'] is not None:
+        return clamp_order_xyxy(det['box'], W, H)
+
+    # fall back to normalized xywh → pixel xyxy
+    cx, cy, w, h = det['cx'], det['cy'], det['w'], det['h']
+    x1 = (cx - w / 2.0) * W
+    y1 = (cy - h / 2.0) * H
+    x2 = (cx + w / 2.0) * W
+    y2 = (cy + h / 2.0) * H
+    return clamp_order_xyxy([x1, y1, x2, y2], W, H)
+
+def assert_box(xyxy, W, H, tag=""):
+    x1,y1,x2,y2 = xyxy
+    ok = 0 <= x1 <= x2 < W and 0 <= y1 <= y2 < H
+    if not ok:
+        print(f"[BAD BOX {tag}] {xyxy} in ({W}x{H})")
+    return ok
 
 
 def expand_and_clamp(
@@ -56,6 +125,8 @@ def yolo_line_to_xyxy(line: str, W: int, H: int):
     x2 = (cx + w / 2) * W
     y2 = (cy + h / 2) * H
     conf = float(parts[5]) if len(parts) >= 6 else 1.0
+    box = clamp_order_xyxy([x1, y1, x2, y2], W, H)
+    assert_box(box, W, H, tag="yolo conversion")
     return cls, [x1, y1, x2, y2], conf
 
 
