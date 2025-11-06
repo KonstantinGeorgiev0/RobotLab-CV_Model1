@@ -10,13 +10,11 @@ import numpy as np
 import cv2
 from graphviz import Digraph
 
-from detection.liquid_detector import LiquidDetector
-from robotlab_utils.bbox_utils import yolo_line_to_xyxy, box_area, expand_and_clamp, ensure_xyxy_px
+from robotlab_utils.bbox_utils import ensure_xyxy_px, clamp_order_xyxy, box_area
 from image_analysis.line_hv_detection import LineDetector
 from analysis.gelled_analysis import run_curve_metrics
 from config import CLASS_IDS, LIQUID_CLASSES, CURVE_PARAMS, DETECTION_THRESHOLDS, DETECTION_FILTERS, LINE_RULES, \
-    LINE_PARAMS, LIQUID_DETECTOR, REGION_RULES
-from robotlab_utils.image_utils import extract_region, calculate_brightness_stats
+    LINE_PARAMS, REGION_RULES
 from robotlab_utils.liquid_detection_utils import parse_detections
 
 
@@ -418,8 +416,8 @@ class MultipleNoAirNode(DecisionNode):
                 node_path=path
             )
 
-        top_liq = min(liquid_dets, key=lambda d: d['box'][1])
-        y1, y2 = top_liq['box'][1], top_liq['box'][3]
+        top_liq = min(liquid_dets, key=lambda d: d['box_coords'][1])
+        y1, y2 = top_liq['box_coords'][1], top_liq['box_coords'][3]
 
         # Thresholds
         touch_thr = REGION_RULES.get("air_top_touch_frac", 0.25) * H
@@ -449,8 +447,8 @@ class MultipleNoAirNode(DecisionNode):
             # Reclassify top-most liquid as AIR and trim to interface
             top_liq['class_id'] = CLASS_IDS['AIR']
             top_liq['reclassified_from'] = 'LIQUID→AIR (near_top + 1 line or deep span)'
-            if interface_y is not None and top_liq['box'][3] > interface_y:
-                top_liq['box'][3] = interface_y  # keep AIR above the interface
+            if interface_y is not None and top_liq['box_coords'][3] > interface_y:
+                top_liq['box_coords'][3] = interface_y  # keep AIR above the interface
 
             # Recompute counts/areas
             self._recompute(evidence)
@@ -505,117 +503,99 @@ class SingleLiquidNode(DecisionNode):
             return "single_no_air", None
 
 
+def _primary_interface_y(evidence):
+    # prefer the longest horizontal line
+    hl = (evidence.horizontal_lines or {}).get("lines") or []
+    if not hl:
+        return None
+    # lines may already carry x_length_frac; fall back to thickness if needed
+    lens = [l.get("x_length_frac", 0.0) for l in hl]
+    idx = int(np.argmax(lens)) if lens else 0
+    y = hl[idx]["y_position"]
+    if (evidence.horizontal_lines or {}).get("y_normalized", False):
+        return float(y) * float(evidence.image_height)
+    return float(y)
+
+
 class SingleWithAirNode(DecisionNode):
     """Single liquid with air."""
     def __init__(self):
         super().__init__("single_with_air", "Single liquid with air")
 
-    def _clamp_xyxy(self, box, W, H):
-        x1, y1, x2, y2 = map(float, box)
-        if x2 < x1: x1, x2 = x2, x1
-        if y2 < y1: y1, y2 = y2, y1
-        x1 = max(0.0, min(W - 1.0, x1))
-        y1 = max(0.0, min(H - 1.0, y1))
-        x2 = max(0.0, min(W - 1.0, x2))
-        y2 = max(0.0, min(H - 1.0, y2))
-        return [x1, y1, x2, y2]
-
-    def _primary_interface_y(self, evidence):
-        # prefer the longest horizontal line
-        hl = (evidence.horizontal_lines or {}).get("lines") or []
-        if not hl:
-            return None
-        # lines may already carry x_length_frac; fall back to thickness if needed
-        lens = [l.get("x_length_frac", 0.0) for l in hl]
-        idx = int(np.argmax(lens)) if lens else 0
-        y = hl[idx]["y_position"]
-        if (evidence.horizontal_lines or {}).get("y_normalized", False):
-            return float(y) * float(evidence.image_height)
-        return float(y)
-
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
 
-        H = max(1, int(evidence.image_height))
-        W = max(1, int(evidence.image_width))
-        vert_gap_frac = REGION_RULES.get("vertical_gap_frac", 0.12)  # tolerate small bbox slack
-        touch_eps_px  = REGION_RULES.get("vertical_touch_eps_px", max(3, int(0.005 * H)))  # ~0.5% H
-
+        # Get air and liquid detections
         air_dets = [d for d in evidence.detections if d['class_id'] == CLASS_IDS['AIR']]
         liquid_dets = [d for d in evidence.detections if d['class_id'] in LIQUID_CLASSES]
 
-        if air_dets and liquid_dets:
-            # top-most AIR by y1
-            air_det = min(air_dets, key=lambda d: d['box'][1])
-            air_box = self._clamp_xyxy(air_det['box'], W, H)
+        if not air_dets or not liquid_dets:
+            # Fallback to majority vote if missing air or liquid
+            if evidence.gel_count > evidence.stable_count:
+                return "gel_dominant", None
+            elif evidence.stable_count > evidence.gel_count:
+                return "stable_dominant", None
+            else:
+                return "mixed_liquid", None
 
-            # choose the liquid that is directly below AIR (smallest y1 >= air_bottom - eps)
-            air_bottom = air_box[3]
-            cand = sorted(liquid_dets, key=lambda d: d['box'][1])
-            liq_det = None
-            for d in cand:
-                box = self._clamp_xyxy(d['box'], W, H)
-                if box[1] >= air_bottom - touch_eps_px:
-                    liq_det = d
-                    liq_box = box
-                    break
-            # if none found (all start above air_bottom due to jitter), take top-most liquid
-            if liq_det is None:
-                liq_det = cand[0]
-                liq_box = self._clamp_xyxy(liq_det['box'], W, H)
+        # # indicator: multiple horizontal lines suggest phase separation
+        # if evidence.num_horizontal_lines >= 2:
+        #     return None, Decision(
+        #         state=VialState.PHASE_SEPARATED,
+        #         confidence=Confidence.HIGH,
+        #         reasoning=[
+        #             "Single liquid + AIR detected",
+        #             f"Multiple horizontal lines ({evidence.num_horizontal_lines}) indicate phase separation"
+        #         ],
+        #         evidence_summary={
+        #             "num_horizontal_lines": evidence.num_horizontal_lines,
+        #             "detection_method": "multiple_horizontal_lines"
+        #         },
+        #         node_path=path.copy()
+        #     )
 
-            liq_top = liq_box[1]
+        # indicator: significant vertical gap between air and liquid
+        air_det = min(air_dets, key=lambda d: d['box_coords'][1])  # Top-most air
+        liq_det = min(liquid_dets, key=lambda d: d['box_coords'][1])  # Top-most liquid
 
-            # snap to measured interface if available
-            interface_y = self._primary_interface_y(evidence)
-            if interface_y is not None:
-                # if interface lies between (or very near) the two edges, treat as touching
-                if (air_bottom - touch_eps_px) <= interface_y <= (liq_top + touch_eps_px):
-                    air_bottom = interface_y
-                    liq_top    = interface_y
+        air_bottom = air_det['box_coords'][3]
+        liq_top = liq_det['box_coords'][1]
+        liq_bottom = liq_det['box_coords'][3]
 
-            raw_gap = liq_top - air_bottom
-            gap_px  = max(0.0, raw_gap - touch_eps_px)
-            gap_frac = gap_px / H
+        # Calculate gap as fraction of image height
+        gap_px = max(0, liq_top - air_bottom)
+        gap_frac = gap_px / evidence.image_height
+        gap_with_bottom = max(0, evidence.image_height - liq_bottom)
 
-            # if getattr(evidence, "debug", False):
-            print("\nAIR COORDS (clamped):", air_box)
-            print("LIQ COORDS (clamped):", liq_box)
-            print("interface_y:", interface_y, "touch_eps_px:", touch_eps_px)
-            print("RAW GAP / GAP PX / FRAC:", raw_gap, gap_px, gap_frac)
+        gap_decision_strings = [
+            "between LIQUID and AIR detections suggests phase separation",
+            "between LIQUID and image bottom suggests phase separation"
+        ]
 
-            # require ≥2 interfaces to call phase separation from a vertical-gap heuristic
-            has_two_interfaces = evidence.num_horizontal_lines >= 2
-            if gap_frac >= vert_gap_frac and has_two_interfaces:
-                conf = Confidence.HIGH
-                reasoning = [
+        # Check if gap is significant enough
+        vert_gap_frac = REGION_RULES.get("vertical_gap_frac", 0.075)
+        vert_gap_frac_with_bottom = REGION_RULES.get("vertical_gap_frac_with_bottom", 0.10)
+        if gap_frac >= vert_gap_frac or gap_with_bottom >= vert_gap_frac_with_bottom and evidence.num_horizontal_lines > 1:
+            return None, Decision(
+                state=VialState.PHASE_SEPARATED,
+                confidence=Confidence.MEDIUM,
+                reasoning=[
                     "Single liquid + AIR detected",
-                    f"Vertical gap = {gap_frac*100:.1f}% (≥ {vert_gap_frac*100:.1f}%)",
-                    "≥2 horizontal interfaces detected",
-                    "Consistent with phase separation"
-                ]
-                return None, Decision(
-                    state=VialState.PHASE_SEPARATED,
-                    confidence=conf,
-                    reasoning=reasoning,
-                    evidence_summary={
-                        "gap_frac": round(gap_frac, 4),
-                        "gap_px": int(gap_px),
-                        "num_horizontal_lines": evidence.num_horizontal_lines
-                    },
-                    node_path=path.copy()
-                )
+                    f"Significant vertical gap ({gap_frac * 100:.1f}%) {gap_decision_strings[0] if gap_frac >= vert_gap_frac else gap_decision_strings[1]}",
+                ],
+                evidence_summary={
+                    "gap_frac": round(gap_frac, 4),
+                    "gap_px": int(gap_px),
+                    "detection_method": "vertical_gap"
+                },
+                node_path=path.copy()
+            )
 
-            # otherwise prefer stable when only one interface is present
-            return "stable_dominant", None
-
-        # no AIR or no LIQUID - delegate majority vote
-        if evidence.gel_count > evidence.stable_count:
-            return "gel_dominant", None
-        elif evidence.stable_count > evidence.gel_count:
+        # Default to stable if no indicators
+        if evidence.stable_count >= evidence.gel_count:
             return "stable_dominant", None
         else:
-            return "mixed_liquid", None
+            return "gel_dominant", None
 
 
 class GelDominantNode(DecisionNode):
@@ -625,6 +605,23 @@ class GelDominantNode(DecisionNode):
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
+
+        # # indicator: curve analysis
+        # if evidence.curve_variance <= CURVE_PARAMS.get("stable_variance_thr", 55.0):
+        #     return None, Decision(
+        #         state=VialState.STABLE,
+        #         confidence=Confidence.MEDIUM,
+        #         reasoning=[
+        #             "Single liquid (GEL) + AIR detected",
+        #             f"State Overwrite: Low curve variance ({evidence.curve_variance:.2f}) suggests STABLE state"
+        #         ],
+        #         evidence_summary={
+        #             "curve_variance": evidence.curve_variance,
+        #             "detection_method": "curve_analysis"
+        #         },
+        #         node_path=path.copy()
+        #     )
+
         reasoning = ["Single liquid with air", "Gel detections dominant"]
         return None, Decision(
             state=VialState.GELLED,
@@ -645,6 +642,23 @@ class StableDominantNode(DecisionNode):
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
+
+        # indicator: curve analysis
+        if evidence.curve_variance >= CURVE_PARAMS.get("gel_variance_thr", 75.0):
+            return None, Decision(
+                state=VialState.GELLED,
+                confidence=Confidence.MEDIUM,
+                reasoning=[
+                    "Single liquid (STABLE) + AIR detected",
+                    f"State Overwrite: High curve variance ({evidence.curve_variance:.2f}) suggests GEL state"
+                ],
+                evidence_summary={
+                    "curve_variance": evidence.curve_variance,
+                    "detection_method": "curve_analysis"
+                },
+                node_path=path.copy()
+            )
+
         reasoning = ["Single liquid with air", "Stable detections dominant"]
         return None, Decision(
             state=VialState.STABLE,
@@ -828,15 +842,15 @@ def _apply_air_placement_rules(ev: Evidence) -> None:
     tol_px = max(2, int(0.01 * H))  # small tolerance on line position
 
     def is_topmost(det):
-        return det['box'][1] == min(d['box'][1] for d in ev.detections)
+        return det['box_frac_coords'][1] == min(d['box_frac_coords'][1] for d in ev.detections)
 
     def recompute_counts():
         ev.liquid_count = sum(1 for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
         ev.gel_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
         ev.stable_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['STABLE'])
         ev.air_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR'])
-        ev.total_liquid_area = sum(d['area'] for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
-        gel_area = sum(d['area'] for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+        ev.total_liquid_area = sum(d['area_frac'] for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
+        gel_area = sum(d['area_frac'] for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
         ev.gel_area_fraction = (gel_area / ev.total_liquid_area) if ev.total_liquid_area > 0 else 0.0
 
     def most_likely_liquid_class():
@@ -860,39 +874,39 @@ def _apply_air_placement_rules(ev: Evidence) -> None:
 
         # AIR deduplication
         if len(air_dets) > 1:
-            # discard small ones (area fraction < 1% of image)
-            min_area = 0.05 * (ev.image_width * ev.image_height)
-            air_valid = [d for d in air_dets if d['area'] >= min_area]
+            # discard small
+            min_area = 0.05
+            air_valid = [d for d in air_dets if d['area_frac'] >= min_area]
 
             # discard those entirely in bottom of image
             h_thr = 0.5 * ev.image_height
-            air_valid = [d for d in air_valid if d['box'][1] < h_thr]
+            air_valid = [d for d in air_valid if d['box_coords'][1] < h_thr]
 
             if air_valid:
                 # pick the one with largest area
-                best_air = max(air_valid, key=lambda d: d['area'])
+                best_air = max(air_valid, key=lambda d: d['area_frac'])
                 for d in air_dets:
                     if d is not best_air:
                         d['class_id'] = most_likely_liquid_class()
                 ev.air_count = 1
             else:
                 # fallback: keep top-most if everything was filtered
-                top_air = min(air_dets, key=lambda d: d['box'][1])
+                top_air = min(air_dets, key=lambda d: d['box_coords'][1])
                 for d in air_dets:
                     if d is not top_air:
                         d['class_id'] = most_likely_liquid_class()
                 ev.air_count = 1
 
         air = air_dets[0]
-        y1, y2 = air['box'][1], air['box'][3]
+        y1, y2 = air['box_coords'][1], air['box_coords'][3]
 
         if not is_topmost(air):
-            print("\nAIR NOT TOPMOST REACHED\n")
+            # print("\nAIR NOT TOPMOST REACHED\n")
             # AIR below a liquid region - reclassify
             air['class_id'] = most_likely_liquid_class()
             recompute_counts()
         else:
-            print("\nAIR TOPMOST REACHED\n")
+            # print("\nAIR TOPMOST REACHED\n")
             # required to be above the interface and start near top
             above_interface_ok = True
             if interface_y is not None:
@@ -905,10 +919,10 @@ def _apply_air_placement_rules(ev: Evidence) -> None:
 
     # If AIR is missing: infer AIR at the top when obvious
     if sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR']) == 0:
-        print("\nAIR INFER AT TOP REACHED\n")
-        sorted_dets = sorted(ev.detections, key=lambda d: d['box'][1])
+        # print("\nAIR INFER AT TOP REACHED\n")
+        sorted_dets = sorted(ev.detections, key=lambda d: d['box_coords'][1])
         top_det = sorted_dets[0]
-        ty1, ty2 = top_det['box'][1], top_det['box'][3]
+        ty1, ty2 = top_det['box_coords'][1], top_det['box_coords'][3]
 
         # Empty space above highest detection - synthesize AIR
         empty_space_frac_thr = max(0.12, 2.0 * LINE_RULES.get("cap_level_frac", 0.08))
@@ -919,17 +933,17 @@ def _apply_air_placement_rules(ev: Evidence) -> None:
         if empty_space_condition:
             # reclassify the top-most detection
 
-            print("\nREACHED\n")
+            # print("\nREACHED\n")
 
             top_det['class_id'] = CLASS_IDS['AIR']
             top_det['source'] = 'air_reclassified_from_liquid'
             # Adjust bottom boundary to match interface
             if interface_y is not None:
-                top_det['box'][3] = min(top_det['box'][3], interface_y - tol_px)
+                top_det['box_coords'][3] = min(top_det['box_coords'][3], interface_y - tol_px)
             else:
-                top_det['box'][3] = ty1  # keep above previous liquid start
+                top_det['box_coords'][3] = ty1  # keep above previous liquid start
             # Recalculate area
-            top_det['area'] = float((top_det['box'][3] - top_det['box'][1]) * W)
+            top_det['area'] = float((top_det['box_coords'][3] - top_det['box_coords'][1]) * W)
             recompute_counts()
 
         else:
@@ -937,7 +951,7 @@ def _apply_air_placement_rules(ev: Evidence) -> None:
             if ty1 <= cap_y and len(sorted_dets) >= 2:
                 top_det['class_id'] = CLASS_IDS['AIR']
                 if interface_y is not None:
-                    top_det['box'][3] = min(top_det['box'][3], interface_y)
+                    top_det['box_coords'][3] = min(top_det['box_coords'][3], interface_y)
                 recompute_counts()
 
     # brightness tie-breaker if still no AIR after geometry
@@ -946,10 +960,10 @@ def _apply_air_placement_rules(ev: Evidence) -> None:
             img = cv2.imread(str(ev.image_path))
             if img is not None and ev.detections:
                 # top-most region
-                top_det = min(ev.detections, key=lambda d: d['box'][1])
+                top_det = min(ev.detections, key=lambda d: d['box_coords'][1])
                 # only if it is liquid class
                 if top_det['class_id'] in LIQUID_CLASSES:
-                    x1, y1, x2, y2 = map(int, top_det['box'])
+                    x1, y1, x2, y2 = map(int, top_det['box_coords'])
                     roi = img[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
                     if roi.size > 0:
                         mean = float(roi.mean())
@@ -961,7 +975,7 @@ def _apply_air_placement_rules(ev: Evidence) -> None:
                             if 'hline_y' in ev.__dict__ and ev.hline_y:
                                 idx = int(np.argmax(ev.hline_len_frac))
                                 interface_y = ev.hline_y[idx]
-                                top_det['box'][3] = min(top_det['box'][3], interface_y)
+                                top_det['box_coords'][3] = min(top_det['box_coords'][3], interface_y)
 
 
 def _build_tree() -> DecisionNode:
@@ -1039,6 +1053,9 @@ class VialStateClassifierV2:
         # Traverse tree
         decision = self._traverse_tree(evidence)
 
+        # Include terminal state to decision path
+        decision.node_path.append(decision.state.value)
+
         # Format output
         return {
             "vial_state": decision.state.value,
@@ -1086,37 +1103,45 @@ class VialStateClassifierV2:
 
         # normalize detections and attach fractional geometry
         norm_detections = []
-        img_area = float(width * height)
+        # img_area = float(width * height)
 
         for det in detections:
             # guarantee pxl xyxy
+            # print(f"\nDet class: {det['class_id']}")
             xyxy = ensure_xyxy_px(det, width, height)
             x1, y1, x2, y2 = xyxy
+            # take only first 2 decimals after float point in coordinates x1, y1, x2, y2
+            x1, y1 = float(x1), float(y1)
+            x2, y2 = float(x2), float(y2)
+#             print(f"\nDet xyxy: {x1}, {y1}, {x2}, {y2}\n")
+#             print(f"\nDet xyxy: {xyxy}")
 
             # pixel geometry
             w_px = max(0.0, x2 - x1)
             h_px = max(0.0, y2 - y1)
             area_px = w_px * h_px
 
-            # fractional geometry in [0..1]
+            # fractional geometry
             box_frac = [x1 / width, y1 / height, x2 / width, y2 / height]
-            area_frac = (area_px / img_area) if img_area > 0 else 0.0
-            cx_frac = ((x1 + x2) * 0.5) / width
-            cy_frac = ((y1 + y2) * 0.5) / height
+#             print(f"\nbox_frac: {box_frac}\n")
+            area_frac = box_area([x1, y1, x2, y2], width, height)
+            center_x_frac = ((x1 + x2) * 0.5) / width
+            center_y_frac = ((y1 + y2) * 0.5) / height
 
             # uniform schema
             det_norm = {
                 'class_id': det['class_id'],
                 'confidence': det.get('confidence', 1.0),
-                'box': [x1, y1, x2, y2],  # pixel coords for drawing & rules
-                'box_frac': box_frac,  # fractional coords
+                'box_coords': [x1, y1, x2, y2],  # pixel coords
+                'box_frac_coords': box_frac,  # fractional coords
                 'area': area_px,  # pixel area
                 'area_frac': area_frac,  # fractional area
-                'center_frac': [cx_frac, cy_frac]  # ordering by height
+                'center_frac': [center_x_frac, center_y_frac]  # center x,y points of det
             }
             norm_detections.append(det_norm)
 
         detections = norm_detections
+#         print(f"\nDetection: {detections}\n")
 
         # Recalculate after correction
         gel_count = sum(1 for d in detections if d['class_id'] == CLASS_IDS['GEL'])
@@ -1125,9 +1150,12 @@ class VialStateClassifierV2:
         liquid_count = gel_count + stable_count
 
         # Define areas
-        total_liquid_area = sum(d['area'] for d in detections if d['class_id'] in LIQUID_CLASSES)
-        gel_area = sum(d['area'] for d in detections if d['class_id'] == CLASS_IDS['GEL'])
+        total_liquid_area = sum(d['area_frac'] for d in detections if d['class_id'] in LIQUID_CLASSES)
+#         print("\nTOTAL LIQUID AREA: ", total_liquid_area, "\n")
+        gel_area = sum(d['area_frac'] for d in detections if d['class_id'] == CLASS_IDS['GEL'])
+#         print("\nGEL AREA: ", gel_area, "\n")
         gel_area_fraction = gel_area / total_liquid_area if total_liquid_area > 0 else 0.0
+#         print("\nGEL AREA FRACTION: ", gel_area_fraction, "\n")
 
         # Geometry
         cap_level_y = int(height * LINE_RULES["cap_level_frac"])  # from top
@@ -1136,7 +1164,8 @@ class VialStateClassifierV2:
         # Line detection
         detector = LineDetector(
             min_line_length=LINE_PARAMS["min_line_length"],
-            merge_threshold=LINE_PARAMS["merge_threshold"],
+            merge_threshold_horizontal=LINE_PARAMS["merge_threshold_horizontal"],
+            merge_threshold_vertical=LINE_PARAMS["merge_threshold_vertical"],
             horiz_kernel_div=LINE_PARAMS["horiz_kernel_div"],
             vert_kernel_div=LINE_PARAMS["vert_kernel_div"],
             adaptive_block=LINE_PARAMS["adaptive_block"],
@@ -1207,10 +1236,10 @@ class VialStateClassifierV2:
         # print("\nAIR BEFORE\n", evidence.air_count)
         # print("\nLIQUIDS BEFORE\n", evidence.liquid_count)
         # print("\nGEL BEFORE\n", evidence.gel_count)
-
-        _apply_air_placement_rules(evidence)
+        # print("\nDETECTIONS BEFORE: ", detections)
+        # _apply_air_placement_rules(evidence)
         self._recompute_evidence_counts(evidence)
-
+#         print("\nDETECTIONS AFTER: ", evidence.detections)
         # print("\nAIR AFTER\n", evidence.air_count)
         # print("\nLIQUIDS AFTER\n", evidence.liquid_count)
         # print("\nGEL AFTER\n", evidence.gel_count)
