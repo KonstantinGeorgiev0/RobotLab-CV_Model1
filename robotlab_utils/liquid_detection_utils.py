@@ -47,10 +47,10 @@ def parse_detections(label_path: Path, W: int, H: int) -> List[Dict[str, Any]]:
                 if conf < DETECTION_FILTERS["conf_min"]:
                     continue
 
-                area = box_area(box)
+                area = box_area(box, W, H)
 
                 # Filter small liquid areas
-                if area < DETECTION_FILTERS["min_liquid_area_frac"] * (W * H) and cls_id in LIQUID_CLASSES:
+                if area < DETECTION_FILTERS["min_liquid_area_frac"] and cls_id in LIQUID_CLASSES:
                     continue
 
                 det = {

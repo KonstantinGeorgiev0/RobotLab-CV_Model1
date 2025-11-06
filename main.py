@@ -9,9 +9,6 @@ Orchestrates the two-stage process:
 import sys
 from pathlib import Path
 
-from analysis.gelled_analysis import run_curve_metrics
-from image_analysis.line_hv_detection import LineDetector
-
 # Ensure yolov5 is on sys.path
 YOLO_ROOT = Path(__file__).parent / "yolov5"
 sys.path.insert(0, str(YOLO_ROOT))
@@ -19,9 +16,8 @@ sys.path.insert(0, str(YOLO_ROOT))
 import argparse
 import json
 import subprocess
-import shutil
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple
 
 import cv2
 import numpy as np
@@ -37,12 +33,10 @@ from yolov5.utils.general import (
 from yolov5.utils.torch_utils import select_device
 
 # Custom modules
-from config import DEFAULT_PATHS, LIQUID_DETECTOR, VIAL_DETECTOR, CURVE_PARAMS, LINE_PARAMS
-# from analysis.state_classifier import VialStateClassifier
+from config import DEFAULT_PATHS, LIQUID_DETECTOR, VIAL_DETECTOR, CURVE_PARAMS
 from analysis.classification_tree import VialStateClassifierV2, export_tree_graphviz
-# from analysis.classification_tree_old import VialStateClassifierV2
-from analysis.turbidity_analysis import compute_turbidity_profile, analyze_region_turbidity
-from visualization.turbidity_viz import save_enhanced_turbidity_plot, create_detection_visualization
+from analysis.turbidity_analysis import compute_turbidity_profile
+from visualization.turbidity_viz import save_enhanced_turbidity_plot
 from robotlab_utils.image_utils import resize_keep_height
 from robotlab_utils.bbox_utils import expand_and_clamp
 from visualization.detection_visualization import create_filtered_detection_visualization, create_line_visualization, \
@@ -418,7 +412,6 @@ class VialDetectionPipeline:
                     png_path = tree_dir / f"{stem}_tree.png"
                     export_tree_graphviz(
                         root=self.classifier.root,
-                        # root=self.classifier.tree,
                         out_dot=dot_path,
                         out_png=png_path,
                         title=f"Decision Tree — {stem}",

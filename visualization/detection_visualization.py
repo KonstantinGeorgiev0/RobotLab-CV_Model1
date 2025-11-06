@@ -270,7 +270,8 @@ def create_line_visualization(
         adaptive_c=LINE_PARAMS.get("adaptive_c", -2),
         min_line_length=LINE_PARAMS.get("min_line_length", 0.3),
         min_line_strength=LINE_PARAMS.get("min_line_strength", 0.1),
-        merge_threshold=LINE_PARAMS.get("merge_threshold", 0.02)
+        merge_threshold_horizontal=LINE_PARAMS.get("merge_threshold_horizontal", 0.02),
+        merge_threshold_vertical=LINE_PARAMS.get("merge_threshold_vertical", 0.02),
     )
     result = detector.detect(image_path, top_exclusion=top_exclusion, bottom_exclusion=bottom_exclusion)
     detector.visualize(image_path, output_path, result, top_exclusion, bottom_exclusion)

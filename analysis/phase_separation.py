@@ -73,7 +73,8 @@ class PhaseSeparationDetector:
         if image_path is not None:
             detector = LineDetector(
                 min_line_length=LINE_PARAMS["min_line_length"],
-                merge_threshold=LINE_PARAMS["merge_threshold"],
+                merge_threshold_horizontal=LINE_PARAMS["merge_threshold_horizontal"],
+                merge_threshold_vertical=LINE_PARAMS["merge_threshold_vertical"]
             )
             line_result = detector.detect(
                 image_path=Path(image_path),

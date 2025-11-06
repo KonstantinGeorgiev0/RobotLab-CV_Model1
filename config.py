@@ -56,13 +56,16 @@ PHASE_SEPARATION_THRESHOLDS = {
 
 # Turbidity analysis parameters
 TURBIDITY_PARAMS = {
-    'analysis_width': 100,           # Standard width for turbidity analysis
-    'analysis_height': 500,          # Standard height for turbidity analysis
+    'analysis_width': 120,           # Standard width for turbidity analysis
+    'analysis_height': 600,          # Standard height for turbidity analysis
     'top_exclude_fraction': 0.30,    # Default top exclusion fraction
-    'bottom_exclude_fraction': 0.05, # Bottom exclusion fraction
+    'bottom_exclude_fraction': 0.10, # Bottom exclusion fraction
+    'right_exclude_fraction': 0.25,  # Right exclusion fraction
+    'left_exclude_fraction': 0.25,   # Left exclusion fraction
     'gradient_threshold_sigma': 2.5, # Sigma multiplier for gradient threshold
     'gradient_threshold_min': 0.15,  # Minimum gradient threshold
     'peak_separation_fraction': 0.1, # Minimum separation between peaks
+    'brightness_threshold': 0.5,     # Detect where brightness goes above this
 }
 
 # Region exclusion for liquid detection (normalized coordinates)
@@ -75,7 +78,8 @@ REGION_EXCLUSION = {
 # Line detection parameters
 LINE_PARAMS = {
     'min_line_length': 0.75,           # minimum line length for detection
-    'merge_threshold': 0.10,           # merge lines that are too close together
+    'merge_threshold_horizontal': 0.038,    # merge horiz lines that are too close together
+    'merge_threshold_vertical': 0.30,  # merge vert lines
     'top_exclusion': 0.30,             # top exclusion fraction
     'bottom_exclusion': 0.15,          # bottom exclusion fraction
     'horizontal_bounds': (0.03, 0.97), # normalized (left, right)
@@ -139,11 +143,12 @@ REGION_RULES = {
     "air_top_touch_frac": 0.25,         # touches top
     "air_deep_span_frac": 0.75,         # spans deep down the vial
     "min_headspace_frac": 0.15,         # minimum headspace fraction required
-    "vertical_gap_frac": 0.075,              # vertical gap between AIR bottom and LIQUID top
+    "vertical_gap_frac": 0.075,         # vertical gap between AIR bottom and LIQUID top
+    "vertical_gap_frac_with_bottom": 0.10 # vertical gap between LIQUID bottom and image bottom
 }
 
 DETECTION_FILTERS = {
     "conf_min": 0.25,
-    "min_liquid_area_frac": 0.01,   # drop tiny fragments
+    "min_liquid_area_frac": 0.05,    # drop small fragments
     "merge_iou": 0.5,               # merge overlapping liquid fragments
 }

@@ -130,7 +130,7 @@ def yolo_line_to_xyxy(line: str, W: int, H: int):
     return cls, [x1, y1, x2, y2], conf
 
 
-def box_area(bbox: List[float]) -> float:
+def box_area(bbox: List[float], W: int, H: int) -> float:
     """
     Calculate the area of a bounding box.
 
@@ -138,9 +138,17 @@ def box_area(bbox: List[float]) -> float:
         bbox: [x1, y1, x2, y2]
 
     Returns:
-        Area of the bounding box
+        Area of the bounding box in fraction of the image. 0 if bbox is invalid.
     """
     x1, y1, x2, y2 = bbox
+    if x2 < x1 < 0 or y2 < y1 < 0 or H <=0 or W <=0:
+        return 0.0
+
+    # convert to fractions of image width and height
+    x1 /= W
+    y1 /= H
+    x2 /= W
+    y2 /= H
     return max(0.0, x2 - x1) * max(0.0, y2 - y1)
 
 

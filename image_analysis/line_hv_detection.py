@@ -83,7 +83,8 @@ class LineDetector:
                  adaptive_c: int = LINE_PARAMS["adaptive_c"],
                  min_line_length: float = LINE_PARAMS["horiz_kernel_div"],
                  min_line_strength: float = LINE_PARAMS["min_line_length"],
-                 merge_threshold: float = LINE_PARAMS["merge_threshold"]):
+                 merge_threshold_horizontal: float = LINE_PARAMS["merge_threshold_horizontal"],
+                 merge_threshold_vertical: float = LINE_PARAMS["merge_threshold_vertical"]):
         """Initialize detector with parameters."""
         self.horiz_kernel_div = horiz_kernel_div
         self.vert_kernel_div = vert_kernel_div
@@ -91,7 +92,8 @@ class LineDetector:
         self.adaptive_c = adaptive_c
         self.min_line_length = min_line_length
         self.min_line_strength = min_line_strength
-        self.merge_threshold = merge_threshold
+        self.merge_threshold_horizontal = merge_threshold_horizontal
+        self.merge_threshold_vertical = merge_threshold_vertical
 
 
     def detect(self,
@@ -120,31 +122,21 @@ class LineDetector:
 
         H, W = img.shape[:2]
 
-        # Convert to grayscale
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img.copy()
-
-        # Prepare binary image
-        inv = cv2.bitwise_not(gray)
-        bw = cv2.adaptiveThreshold(
-            inv, 255,
-            cv2.ADAPTIVE_THRESH_MEAN_C,
-            cv2.THRESH_BINARY,
-            self.adaptive_block,
-            self.adaptive_c
-        )
+        # Preprocess image
+        gray, proc_img = self._preprocess_image(img)
 
         # Extract horizontal lines
-        horizontal_img = self._extract_lines(bw, W, 'horizontal')
+        horizontal_img = self._extract_lines(proc_img, W, 'horizontal')
 
         # Extract vertical lines
-        vertical_img = self._extract_lines(bw, H, 'vertical')
+        vertical_img = self._extract_lines(proc_img, H, 'vertical')
 
         # Save debug images if requested
         if save_debug and debug_dir:
             debug_dir.mkdir(parents=True, exist_ok=True)
             stem = image_path.stem
             cv2.imwrite(str(debug_dir / f"{stem}_gray.png"), gray)
-            cv2.imwrite(str(debug_dir / f"{stem}_binary.png"), bw)
+            cv2.imwrite(str(debug_dir / f"{stem}_binary.png"), proc_img)
             cv2.imwrite(str(debug_dir / f"{stem}_horizontal.png"), horizontal_img)
             cv2.imwrite(str(debug_dir / f"{stem}_vertical.png"), vertical_img)
 
@@ -193,8 +185,25 @@ class LineDetector:
         }
 
 
-    def _extract_lines(self, bw: np.ndarray, size: int, orientation: str
-                       ) -> np.ndarray:
+    def _preprocess_image(self, img: np.ndarray) -> np.ndarray:
+        """Preprocess the image to enhance vial edges."""
+        # grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img.copy()
+
+        # Prepare binary image
+        inv = cv2.bitwise_not(gray)
+        preprocessed = cv2.adaptiveThreshold(
+            inv, 255,
+            cv2.ADAPTIVE_THRESH_MEAN_C,
+            cv2.THRESH_BINARY,
+            self.adaptive_block,
+            self.adaptive_c
+        )
+
+        return gray, preprocessed
+
+
+    def _extract_lines(self, bw: np.ndarray, size: int, orientation: str) -> np.ndarray:
         """Extract lines using morphology."""
         line = np.copy(bw)
 
@@ -203,7 +212,7 @@ class LineDetector:
             line_kernel = cv2.getStructuringElement(
                 cv2.MORPH_RECT, (line_size, 1)
             )
-        elif orientation =='vertical':
+        elif orientation == 'vertical':
             line_size = int(np.clip(size / self.vert_kernel_div, 5, 51))
             line_kernel = cv2.getStructuringElement(
                 cv2.MORPH_RECT, (1, line_size)
@@ -211,8 +220,13 @@ class LineDetector:
         else:
             raise ValueError("Invalid orientation. Use 'horizontal' or 'vertical'.")
 
-        line = cv2.erode(line, line_kernel)
-        line = cv2.dilate(line, line_kernel)
+        # morphological operations with multiple iterations
+        line = cv2.erode(line, line_kernel, iterations=1)
+        line = cv2.dilate(line, line_kernel, iterations=1)
+
+        # closing operation to connect nearby segments
+        line = cv2.morphologyEx(line, cv2.MORPH_CLOSE, line_kernel)
+
         return line
 
 
@@ -361,12 +375,16 @@ class LineDetector:
         if not lines:
             return lines
 
+        merge_thr = 0.0
+
         if isinstance(lines[0], HorizontalLine):
             sort_key = lambda l: l.y_position
             position_key = lambda l: l.y_position
+            merge_thr = self.merge_threshold_horizontal
         elif isinstance(lines[0], VerticalLine):
             sort_key = lambda l: l.x_position
             position_key = lambda l: l.x_position
+            merge_thr = self.merge_threshold_vertical
         else:
             raise ValueError(f"Unsupported line type: {type(lines[0])}")
 
@@ -378,7 +396,7 @@ class LineDetector:
             line = lines[i]
             prev_line = current_group[-1]
 
-            if abs(position_key(line) - position_key(prev_line)) < self.merge_threshold:
+            if abs(position_key(line) - position_key(prev_line)) < merge_thr:
                 current_group.append(line)
             else:
                 merged.append(self._merge_line_group(current_group))
@@ -599,8 +617,10 @@ def main():
                    help="Fraction of bottom to exclude (0-1)")
     ap.add_argument("--min-line-length", type=float, default=LINE_PARAMS.get("min_line_length", 0.75),
                    help="Minimum line length as fraction")
-    ap.add_argument("--merge-threshold", type=float, default=LINE_PARAMS.get("merge_threshold", 0.1),
-                   help="Threshold for merging nearby lines")
+    ap.add_argument("--merge-threshold-horizontal", type=float, default=LINE_PARAMS.get("merge_threshold_horizontal", 0.03),
+                   help="Threshold for merging nearby horizontal lines")
+    ap.add_argument("--merge-threshold-vertical", type=float, default=LINE_PARAMS.get("merge_threshold_vertical", 0.3),
+                   help="Threshold for merging nearby vertical lines")
     ap.add_argument("--save-debug", action="store_true",
                    help="Save debug images")
 
@@ -621,7 +641,8 @@ def main():
         adaptive_block=LINE_PARAMS.get("adaptive_block", 15),
         min_line_strength=LINE_PARAMS.get("min_line_strength", 0.8),
         min_line_length=args.min_line_length,
-        merge_threshold=args.merge_threshold
+        merge_threshold_horizontal=args.merge_threshold_horizontal,
+        merge_threshold_vertical=args.merge_threshold_vertical
     )
 
     # Detect lines
