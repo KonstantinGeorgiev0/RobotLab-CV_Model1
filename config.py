@@ -66,6 +66,7 @@ TURBIDITY_PARAMS = {
     'gradient_threshold_min': 0.15,  # Minimum gradient threshold
     'peak_separation_fraction': 0.1, # Minimum separation between peaks
     'brightness_threshold': 0.5,     # Detect where brightness goes above this
+    'centerline_width': 15,          # Width of centerline (pixels)
 }
 
 # Region exclusion for liquid detection (normalized coordinates)
