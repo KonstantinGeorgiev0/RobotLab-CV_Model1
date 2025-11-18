@@ -64,9 +64,17 @@ TURBIDITY_PARAMS = {
     'left_exclude_fraction': 0.25,   # Left exclusion fraction
     'gradient_threshold_sigma': 2.5, # Sigma multiplier for gradient threshold
     'gradient_threshold_min': 0.15,  # Minimum gradient threshold
-    'peak_separation_fraction': 0.1, # Minimum separation between peaks
+    'peak_separation_fraction': 0.05, # Minimum separation between peaks
     'brightness_threshold': 0.5,     # Detect where brightness goes above this
     'centerline_width': 15,          # Width of centerline (pixels)
+    "air_max": 0.15,                 # air/empty
+    "translucent_max": 0.25,         # translucent liquid
+    "min_segment_height_frac": 0.01,  # ignore tiny slices
+    "liquid_liquid_contrast": 0.10,   # min |Δμ| for liquid–liquid separation
+    "min_intensity_change": 0.01,    # min change of brightness intensity
+    "min_span_fraction": 0.01,       # min vertical span (fraction of analysis height) to ignore noise
+    "max_span_fraction": 0.50,       # max vertical span (fraction of analysis height) to still be considered sudden
+    "smoothing_sigma": 0.1,          # Gaussian smoothing sigma for brightness profile before change detection
 }
 
 # Region exclusion for liquid detection (normalized coordinates)

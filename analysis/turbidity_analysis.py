@@ -68,14 +68,13 @@ def extract_turbidity_features(img: np.ndarray, params) -> Dict[str, Any]:
     )
 
     # sudden brightness changes along centerline
-    gradient_epsilon = getattr(params, "gradient_threshold", 0.05)
     sudden_changes = detect_sudden_brightness_changes(
         center_profile,
-        min_intensity_change=0.01,
-        min_span_fraction=0.01,
-        max_span_fraction=0.50,
-        smoothing_sigma=0.1,
-        gradient_epsilon=gradient_epsilon,
+        min_intensity_change=getattr(params, "min_change", 0.01),
+        min_span_fraction=getattr(params, "min_span_frac", 0.01),
+        max_span_fraction=getattr(params, "max_span_frac", 0.10),
+        smoothing_sigma=getattr(params, "smooth_sigma", 1.0),
+        gradient_epsilon=getattr(params, "gradient_threshold", 0.05),
     )
 
     # variance and segment stats between sudden changes
@@ -280,19 +279,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--gradient_threshold",
         type=float,
-        default=0.05,
+        default=TURBIDITY_PARAMS.get("gradient_threshold", 0.05),
         help="minimum gradient change to consider a sudden brightness change",
     )
     parser.add_argument(
         "--min_liquid_interfaces",
         type=int,
-        default=1,
+        default=TURBIDITY_PARAMS.get("min_liquid_interfaces", 1),
         help="minimum number of liquid-liquid interfaces for phase separation",
     )
     parser.add_argument(
         "--min_vertical_span",
         type=float,
-        default=0.05,
+        default=TURBIDITY_PARAMS.get("min_vertical_span", 0.05),
         help="minimum vertical span of liquid interfaces (normalized) for phase separation",
     )
     parser.add_argument(
