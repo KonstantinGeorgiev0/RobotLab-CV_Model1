@@ -70,11 +70,11 @@ def extract_turbidity_features(img: np.ndarray, params) -> Dict[str, Any]:
     # sudden brightness changes along centerline
     sudden_changes = detect_sudden_brightness_changes(
         center_profile,
-        min_intensity_change=getattr(params, "min_change", 0.01),
-        min_span_fraction=getattr(params, "min_span_frac", 0.01),
-        max_span_fraction=getattr(params, "max_span_frac", 0.10),
-        smoothing_sigma=getattr(params, "smooth_sigma", 1.0),
-        gradient_epsilon=getattr(params, "gradient_threshold", 0.05),
+        min_intensity_change=TURBIDITY_PARAMS["min_intensity_change"],
+        min_span_fraction=TURBIDITY_PARAMS["min_span_fraction"],
+        max_span_fraction=TURBIDITY_PARAMS["max_span_fraction"],
+        smoothing_sigma=TURBIDITY_PARAMS["smoothing_sigma"],
+        gradient_epsilon=TURBIDITY_PARAMS["gradient_epsilon"],
     )
 
     # variance and segment stats between sudden changes
@@ -84,7 +84,13 @@ def extract_turbidity_features(img: np.ndarray, params) -> Dict[str, Any]:
     )
     segments = variance_stats.get("segments", [])
 
-    brightness_segments = segment_brightness_regions(center_profile)
+    brightness_segments = segment_brightness_regions(
+        center_profile,
+        similarity_threshold=TURBIDITY_PARAMS["similarity_threshold"],
+        min_region_size=TURBIDITY_PARAMS["min_region_size"],
+        smoothing_sigma=TURBIDITY_PARAMS["smoothing_sigma"],
+        gradient_threshold=TURBIDITY_PARAMS["gradient_threshold"],
+    )
 
     # label segments with phases and detect separation events
     analysis_height = center_profile.excluded_regions.get("analysis_height", len(center_profile.raw_profile))
@@ -100,13 +106,10 @@ def extract_turbidity_features(img: np.ndarray, params) -> Dict[str, Any]:
     )
 
     # phase separation decision based on separation events
-    min_liquid_interfaces = getattr(params, "min_liquid_interfaces", 1)
-    min_vertical_span = getattr(params, "min_vertical_span", 0.05)
-
     phase_sep, phase_sep_info = detect_phase_separation_from_separations(
         separation_events,
-        min_liquid_interfaces=min_liquid_interfaces,
-        min_vertical_span=min_vertical_span,
+        min_liquid_interfaces=TURBIDITY_PARAMS["min_liquid_interfaces"],
+        min_vertical_span=TURBIDITY_PARAMS["min_vertical_span"],
     )
 
     # features
@@ -291,7 +294,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min_vertical_span",
         type=float,
-        default=TURBIDITY_PARAMS.get("min_vertical_span", 0.05),
+        default=TURBIDITY_PARAMS.get("min_vertical_span"),
         help="minimum vertical span of liquid interfaces (normalized) for phase separation",
     )
     parser.add_argument(

@@ -17,10 +17,10 @@ from analysis.turbidity.turbidity_profiles import TurbidityProfile
 
 def segment_brightness_regions(
         profile: TurbidityProfile,
-        similarity_threshold: float = 0.15,
-        min_region_size: int = 20,
-        smoothing_sigma: float = 2.0,
-        gradient_threshold: float = 0.03
+        similarity_threshold: float = TURBIDITY_PARAMS["similarity_threshold"],
+        min_region_size: int = TURBIDITY_PARAMS["min_region_size"],
+        smoothing_sigma: float = TURBIDITY_PARAMS["smoothing_sigma"],
+        gradient_threshold: float = TURBIDITY_PARAMS["gradient_threshold"],
 ) -> List[Dict[str, Any]]:
     """
     Segment the turbidity profile into regions of similar brightness.
@@ -231,11 +231,11 @@ def find_brightness_threshold_regions(
 
 def detect_sudden_brightness_changes(
         profile: TurbidityProfile,
-        min_intensity_change: float = 0.05,
-        min_span_fraction: float = 0.01,
-        max_span_fraction: float = 0.35,
-        smoothing_sigma: float = 0.5,
-        gradient_epsilon: float = 0.01
+        min_intensity_change: float,
+        min_span_fraction: float,
+        max_span_fraction: float,
+        smoothing_sigma: float,
+        gradient_epsilon: float
 ) -> List[Dict[str, Any]]:
     """
     Detect sudden brightness changes over a short vertical span.

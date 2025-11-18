@@ -24,8 +24,8 @@ class SeparationEvent:
 
 def detect_phase_separation_from_separations(
         separation_events: List[SeparationEvent],
-        min_liquid_interfaces: int = 1,
-        min_vertical_span: float = 0.01
+        min_liquid_interfaces: int = TURBIDITY_PARAMS["min_liquid_interfaces"],
+        min_vertical_span: float = TURBIDITY_PARAMS["min_vertical_span"]
 ) -> Tuple[bool, Dict[str, Any]]:
     """
     decide if the vial is phase-separated based on separation events
