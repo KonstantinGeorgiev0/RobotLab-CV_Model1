@@ -391,16 +391,16 @@ class MultipleNoAirNode(DecisionNode):
     def __init__(self):
         super().__init__("multiple_no_air", "Multiple liquids, no air")
 
-    @staticmethod
-    def _recompute(ev: Evidence) -> None:
-        total_liquid_area = sum(d['area'] for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
-        gel_area = sum(d['area'] for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
-        ev.total_liquid_area = total_liquid_area
-        ev.gel_area_fraction = gel_area / total_liquid_area if total_liquid_area > 0 else 0.0
-        ev.gel_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
-        ev.stable_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['STABLE'])
-        ev.air_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR'])
-        ev.liquid_count = ev.gel_count + ev.stable_count
+    # @staticmethod
+    # def _recompute(ev: Evidence) -> None:
+    #     total_liquid_area = sum(d['area'] for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
+    #     gel_area = sum(d['area'] for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+    #     ev.total_liquid_area = total_liquid_area
+    #     ev.gel_area_fraction = gel_area / total_liquid_area if total_liquid_area > 0 else 0.0
+    #     ev.gel_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+    #     ev.stable_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['STABLE'])
+    #     ev.air_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR'])
+    #     ev.liquid_count = ev.gel_count + ev.stable_count
 
     def evaluate(self, evidence: Evidence, path: List[str]) -> Tuple[Optional[str], Optional[Decision]]:
         path.append(self.name)
@@ -451,7 +451,8 @@ class MultipleNoAirNode(DecisionNode):
                 top_liq['box_coords'][3] = interface_y  # keep AIR above the interface
 
             # Recompute counts/areas
-            self._recompute(evidence)
+            # self._recompute(evidence)
+            recompute_counts(evidence)
 
             # Route to single_liquid path
             return "route_single", None
@@ -844,15 +845,6 @@ def _apply_air_placement_rules(ev: Evidence) -> None:
     def is_topmost(det):
         return det['box_frac_coords'][1] == min(d['box_frac_coords'][1] for d in ev.detections)
 
-    def recompute_counts():
-        ev.liquid_count = sum(1 for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
-        ev.gel_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
-        ev.stable_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['STABLE'])
-        ev.air_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR'])
-        ev.total_liquid_area = sum(d['area_frac'] for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
-        gel_area = sum(d['area_frac'] for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
-        ev.gel_area_fraction = (gel_area / ev.total_liquid_area) if ev.total_liquid_area > 0 else 0.0
-
     def most_likely_liquid_class():
         return CLASS_IDS['GEL'] if ev.gel_count >= ev.stable_count else CLASS_IDS['STABLE']
 
@@ -1024,6 +1016,16 @@ def _build_tree() -> DecisionNode:
     return root
 
 
+def recompute_counts(ev: Evidence) -> None:
+    ev.liquid_count = sum(1 for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
+    ev.gel_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+    ev.stable_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['STABLE'])
+    ev.air_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR'])
+    ev.total_liquid_area = sum(d['area_frac'] for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
+    gel_area = sum(d['area_frac'] for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+    ev.gel_area_fraction = (gel_area / ev.total_liquid_area) if ev.total_liquid_area > 0 else 0.0
+
+
 # ============================================================================
 # CLASSIFIER
 # ============================================================================
@@ -1070,15 +1072,15 @@ class VialStateClassifierV2:
         }
 
 
-    def _recompute_evidence_counts(self, ev: Evidence) -> None:
-        ev.liquid_count = sum(1 for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
-        ev.gel_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
-        ev.stable_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['STABLE'])
-        ev.air_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR'])
-
-        ev.total_liquid_area = sum(d['area'] for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
-        gel_area = sum(d['area'] for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
-        ev.gel_area_fraction = (gel_area / ev.total_liquid_area) if ev.total_liquid_area > 0 else 0.0
+    # def _recompute_evidence_counts(self, ev: Evidence) -> None:
+    #     ev.liquid_count = sum(1 for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
+    #     ev.gel_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+    #     ev.stable_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['STABLE'])
+    #     ev.air_count = sum(1 for d in ev.detections if d['class_id'] == CLASS_IDS['AIR'])
+    #
+    #     ev.total_liquid_area = sum(d['area'] for d in ev.detections if d['class_id'] in LIQUID_CLASSES)
+    #     gel_area = sum(d['area'] for d in ev.detections if d['class_id'] == CLASS_IDS['GEL'])
+    #     ev.gel_area_fraction = (gel_area / ev.total_liquid_area) if ev.total_liquid_area > 0 else 0.0
 
 
     def _collect_evidence(self,
@@ -1238,7 +1240,8 @@ class VialStateClassifierV2:
         # print("\nGEL BEFORE\n", evidence.gel_count)
         # print("\nDETECTIONS BEFORE: ", detections)
         # _apply_air_placement_rules(evidence)
-        self._recompute_evidence_counts(evidence)
+        # self._recompute_evidence_counts(evidence)
+        recompute_counts(evidence)
 #         print("\nDETECTIONS AFTER: ", evidence.detections)
         # print("\nAIR AFTER\n", evidence.air_count)
         # print("\nLIQUIDS AFTER\n", evidence.liquid_count)

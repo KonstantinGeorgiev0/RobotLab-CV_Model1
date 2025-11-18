@@ -36,7 +36,7 @@ from yolov5.utils.torch_utils import select_device
 from config import DEFAULT_PATHS, LIQUID_DETECTOR, VIAL_DETECTOR, CURVE_PARAMS
 from analysis.classification_tree import VialStateClassifierV2, export_tree_graphviz
 from analysis.turbidity_analysis import compute_turbidity_profile
-from visualization.turbidity_viz import save_enhanced_turbidity_plot
+from visualization.turbidity_viz import save_turbidity_plot
 from robotlab_utils.image_utils import resize_keep_height
 from robotlab_utils.bbox_utils import expand_and_clamp
 from visualization.detection_visualization import create_filtered_detection_visualization, create_line_visualization, \
@@ -330,7 +330,7 @@ class VialDetectionPipeline:
                     profile = compute_turbidity_profile(img)
                     
                     # Save turbidity plot
-                    plot_path = save_enhanced_turbidity_plot(
+                    plot_path = save_turbidity_plot(
                         crop_path,
                         profile.normalized_profile,
                         getattr(profile, "excluded_regions", None),
