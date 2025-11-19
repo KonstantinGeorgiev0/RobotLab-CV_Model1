@@ -38,6 +38,7 @@ def segment_brightness_regions(
     # analysis region
     start_idx = excluded['top_exclude_idx']
     end_idx = excluded['bottom_exclude_idx']
+    print("\nSTART IDX: ", start_idx, "\nEND IDX: ", end_idx, "\n")
     excluded_analysis_region = norm_profile[start_idx:end_idx]
 
     if len(excluded_analysis_region) < min_region_size:
@@ -103,8 +104,9 @@ def segment_brightness_regions(
         center_absolute_after_exclusion_region = (start_absolute_after_exclusion_region + end_absolute_after_exclusion_region) / 2.0
 
         # norm pos in original image
-        start_normalized_original_image = start_idx + seg_start / len(excluded_analysis_region)
-        end_normalized_original_image = start_idx + seg_end / len(excluded_analysis_region)
+        start_normalized_original_image = (start_idx + seg_start) / len(norm_profile)
+        end_normalized_original_image = (start_idx + seg_end) / len(norm_profile)
+
         center_normalized_original_image = (start_normalized_original_image + end_normalized_original_image) / 2.0
 
         # abs pos in original image

@@ -25,7 +25,7 @@ def save_turbidity_plot(
         excluded_info: Optional[Dict[str, Any]] = None,
         out_dir: Optional[Path] = None,
         change_events: Optional[List[Dict[str, Any]]] = None,
-        suffix: str = ".turbidity_enhanced.png",
+        suffix: str = ".turbidity.png",
         use_normalized_height: bool = True,
 ):
     """
@@ -48,6 +48,7 @@ def save_turbidity_plot(
 
     if use_normalized_height:
         z = np.linspace(0, 1, len(v_norm))
+        suffix = suffix.replace(".png", "_normalized.png")
     else:
         z = np.linspace(0, analysis_height, len(v_norm))
 
@@ -252,6 +253,86 @@ def save_turbidity_plot_analysis_only(
     plt.close(fig)
 
     return str(out_path)
+
+
+def load_json(path: Path) -> Dict[str, Any]:
+    """Load a turbidity JSON file safely."""
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def create_state_comparison_plot(
+        json_paths: List[Path],
+        metric: str,
+        output_path: Path,
+        state_order=None,
+        figsize=(7, 4),
+):
+    """
+    Create a comparison plot (e.g., mean turbidity) for each state
+    using all turbidity .json files.
+
+    Args:
+        json_paths: list of paths to JSON files
+        metric: which metric to compare (e.g. 'mean', 'variance', 'std')
+        output_path: path to .png output plot
+        state_order: list defining order of states on X-axis
+        figsize: figure size
+    """
+
+    # collect data per state
+    data = {}  # state - list of metric values
+
+    for jp in json_paths:
+        info = load_json(jp)
+
+        state = info.get("state", "unknown")
+        gstats = info.get("global_stats", {})
+
+        if metric not in gstats:
+            print(f"[warning] {metric} not in {jp.name}, skipping.")
+            continue
+
+        value = gstats.get(metric)
+
+        if state not in data:
+            data[state] = []
+        data[state].append(value)
+
+    # order states
+    if state_order:
+        ordered_states = [s for s in state_order if s in data]
+    else:
+        ordered_states = sorted(data.keys())
+
+    # prepare plotting data
+    x = ordered_states
+    y = [sum(data[s]) / len(data[s]) for s in ordered_states]
+    counts = [len(data[s]) for s in ordered_states]
+
+    # plot
+    plt.figure(figsize=figsize)
+    bars = plt.bar(x, y, color="skyblue", edgecolor="k")
+
+    # annotate bar values and counts
+    for idx, b in enumerate(bars):
+        plt.text(
+            b.get_x() + b.get_width() / 2,
+            b.get_height(),
+            f"{y[idx]:.3f}\n(n={counts[idx]})",
+            ha="center", va="bottom", fontsize=8
+        )
+
+    plt.ylabel(metric)
+    plt.xlabel("Vial State")
+    plt.title(f"{metric} comparison by state")
+    plt.xticks(rotation=30)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=120)
+    plt.close()
+
 
 
 def create_detection_visualization(crop_path: Path,

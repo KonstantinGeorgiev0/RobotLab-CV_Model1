@@ -274,7 +274,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-i", "--image_path",
         type=str,
-        required=True,
         help="path to input vial image (bgr)",
     )
     parser.add_argument(
@@ -324,64 +323,88 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="optional ground-truth state label (stable/gel/phase_separated/only_air)",
     )
+    parser.add_argument(
+        "--image-dir",
+        type=str,
+        help="Directory containing multiple images to process",
+    )
 
     return parser.parse_args()
-
 
 def main() -> None:
     args = parse_args()
 
-    image_path = Path(args.image_path)
-    if not image_path.exists():
-        raise FileNotFoundError(f"image not found: {image_path}")
+    images_to_process = []
 
-    img = cv2.imread(str(image_path))
-    if img is None:
-        raise RuntimeError(f"failed to load image: {image_path}")
+    # image path
+    if args.image_path:
+        image_path = Path(args.image_path)
+        if not image_path.exists():
+            raise FileNotFoundError(f"image not found: {image_path}")
+        images_to_process.append(image_path)
 
-    # extract features
-    features = extract_turbidity_features(img, args)
+    # folder of images
+    if args.image_dir:
+        img_dir = Path(args.image_dir)
+        if not img_dir.exists():
+            raise FileNotFoundError(f"directory not found: {img_dir}")
 
-    # print report
-    print_turbidity_report(features, args)
+        # common image extensions
+        for ext in ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.tif"]:
+            images_to_process.extend(img_dir.glob(ext))
 
-    file_dir = Path(args.out_dir) / image_path.stem
-    file_dir.mkdir(parents=True, exist_ok=True)
+    if not images_to_process:
+        raise RuntimeError("No images provided. Use -i <image> or --image-dir <folder>")
 
-    # plot turbidity profile
-    center_profile = features["centerline_profile"]
-    plot_path = save_turbidity_plot(
-        path=image_path,
-        v_norm=center_profile.normalized_profile,
-        turbidity_profile=center_profile,
-        excluded_info=center_profile.excluded_regions,
-        out_dir=file_dir,
-        change_events=features.get("sudden_changes"),
-        suffix=".turbidity.png",
-        use_normalized_height=True,
-    )
-    print(f"\nsaved turbidity plot to: {plot_path}")
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # plot turbidity of analysis region only
-    analysis_region_plot = save_turbidity_plot_analysis_only(
-        path=image_path,
-        v_norm=center_profile.normalized_profile,
-        excluded_info=center_profile.excluded_regions,
-        out_dir=file_dir,
-    )
-    print(f"\nsaved turbidity plot of analysis region to: {analysis_region_plot}")
+    for image_path in images_to_process:
+        print(f"\n=== Processing {image_path.name} ===")
 
-    # JSON export
-    if getattr(args, "save_json", False):
-        json_obj = features_to_json_dict(
-            image_path=image_path,
-            features=features,
-            state_label=getattr(args, "state_label", None),
+        img = cv2.imread(str(image_path))
+        if img is None:
+            print(f"[warning] failed to load image: {image_path}")
+            continue
+
+        # features
+        features = extract_turbidity_features(img, args)
+
+        # report
+        print_turbidity_report(features, args)
+
+        # plots
+        center_profile = features["centerline_profile"]
+        plot_path = save_turbidity_plot(
+            path=image_path,
+            v_norm=center_profile.normalized_profile,
+            turbidity_profile=center_profile,
+            excluded_info=center_profile.excluded_regions,
+            out_dir=out_dir,
+            change_events=features.get("sudden_changes"),
+            suffix=".turbidity.png",
         )
-        json_path = file_dir / f"{image_path.stem}.turbidity.json"
-        with open(json_path, "w") as f:
-            json.dump(json_obj, f, indent=2)
-        print(f"saved turbidity metrics to: {json_path}")
+        print(f"saved turbidity plot to: {plot_path}")
+
+        analysis_plot = save_turbidity_plot_analysis_only(
+            path=image_path,
+            v_norm=center_profile.normalized_profile,
+            excluded_info=center_profile.excluded_regions,
+            out_dir=out_dir,
+        )
+        print(f"saved analysis-only plot to: {analysis_plot}")
+
+        # save JSON if requested
+        if getattr(args, "save_json", False):
+            json_obj = features_to_json_dict(
+                image_path=image_path,
+                features=features,
+                state_label=getattr(args, "state_label", None),
+            )
+            json_path = out_dir / f"{image_path.stem}.turbidity.json"
+            with open(json_path, "w") as f:
+                json.dump(json_obj, f, indent=2)
+            print(f"saved turbidity metrics to: {json_path}")
 
 
 if __name__ == "__main__":
