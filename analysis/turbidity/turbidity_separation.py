@@ -15,6 +15,7 @@ from config import TURBIDITY_PARAMS
 class SeparationEvent:
     type: str
     boundary_norm: float      # normalized y position of the boundary
+    boundary_pixel: int       # pixel position of the boundary
     top_phase: str            # phase of upper segment
     bottom_phase: str         # phase of lower segment
     delta_brightness: float   # absolute difference in mean brightness
@@ -28,7 +29,7 @@ def detect_phase_separation_from_separations(
         min_vertical_span: float = TURBIDITY_PARAMS["min_vertical_span"]
 ) -> Tuple[bool, Dict[str, Any]]:
     """
-    decide if the vial is phase-separated based on separation events
+    Decide if the vial is phase-separated based on separation events
     """
     if not separation_events:
         return False, {"reason": "no_separation_events"}
@@ -44,15 +45,16 @@ def detect_phase_separation_from_separations(
             "num_liquid_interfaces": len(liquid_ifaces)
         }
 
+    # check vertical span
     ys = [ev.boundary_norm for ev in liquid_ifaces]
     span = max(ys) - min(ys) if ys else 0.0
 
-    if span < min_vertical_span:
-        return False, {
-            "reason": "liquid_interfaces_span_too_small",
-            "num_liquid_interfaces": len(liquid_ifaces),
-            "span": span,
-        }
+    # if span < min_vertical_span:
+    #     return False, {
+    #         "reason": "liquid_interfaces_span_too_small",
+    #         "num_liquid_interfaces": len(liquid_ifaces),
+    #         "span": span,
+    #     }
 
     return True, {
         "reason": "ok",
@@ -91,9 +93,9 @@ def label_segments(
 
     for seg in segments:  # segments must be sorted top to bottom
         h_frac = seg["height_pixels"] / analysis_height
-        # if h_frac < TURBIDITY_PARAMS["min_segment_height_frac"]:
-        #     # ignore thin segments
-        #     continue
+        if h_frac < TURBIDITY_PARAMS["min_segment_height_frac"]:
+            # ignore thin segments
+            continue
 
         phase = classify_segment_phase(seg["mean_brightness"])
 
@@ -138,9 +140,13 @@ def detect_separation_types(
         mu_bottom = float(lower["mean_brightness"])
         delta_mu = abs(mu_bottom - mu_top)
 
-        # # skip small contrast differences
-        # if delta_mu < contrast_min:
-        #     continue
+        # use end of upper segment as boundary position
+        boundary_norm = float(upper.get("end_normalized", upper.get("start_normalized", 0.0)))
+        boundary_pixel = int(boundary_norm * TURBIDITY_PARAMS["analysis_height"])
+
+        # skip small contrast differences
+        if delta_mu < contrast_min:
+            continue
 
         # determine separation type
         if "AIR" in (p_top, p_bottom) and (p_top != p_bottom):
@@ -165,6 +171,7 @@ def detect_separation_types(
         ev = SeparationEvent(
             type=sep_type,
             boundary_norm=boundary_norm,
+            boundary_pixel=boundary_pixel,
             top_phase=p_top,
             bottom_phase=p_bottom,
             delta_brightness=delta_mu,

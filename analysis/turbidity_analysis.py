@@ -12,7 +12,7 @@ from analysis.turbidity.turbidity_metrics import analyze_region_turbidity
 from analysis.turbidity.turbidity_profiles import compute_turbidity_profile, compute_variance_between_changes, \
     compute_centerline_turbidity_profile
 from analysis.turbidity.turbidity_segmentation import find_brightness_threshold_regions, segment_brightness_regions, \
-    detect_sudden_brightness_changes
+    detect_sudden_brightness_changes, hybrid_segment_profile
 from analysis.turbidity.turbidity_separation import label_segments, detect_separation_types, \
     detect_phase_separation_from_separations
 
@@ -91,6 +91,14 @@ def extract_turbidity_features(img: np.ndarray, params) -> Dict[str, Any]:
         smoothing_sigma=TURBIDITY_PARAMS["smoothing_sigma"],
         gradient_threshold=TURBIDITY_PARAMS["gradient_threshold"],
     )
+
+    # # hybrid segmentation
+    # brightness_segments = hybrid_segment_profile(
+    #     center_profile,
+    #     sudden_changes=sudden_changes,
+    #     max_std_for_homogeneous=0.12,
+    #     min_region_size=TURBIDITY_PARAMS["min_region_size"],
+    # )
 
     # label segments with phases and detect separation events
     analysis_height = center_profile.excluded_regions.get("analysis_height", len(center_profile.raw_profile))
@@ -208,11 +216,13 @@ def print_turbidity_report(features: Dict[str, Any], params) -> None:
 
     print(f"\n=== brightness analysis ===")
     threshold = getattr(params, "brightness_threshold", TURBIDITY_PARAMS.get("brightness_threshold", 0.5))
-    print(f"brightness > {threshold} at normalized height(s): {center_crossings}")
+    print(f"First instance brightness > {threshold} at normalized height: {center_crossings}")
     print(
         f"brightness > {threshold} "
         f"in contiguous {len(center_bright_regions)} regions"
     )
+    for region in center_bright_regions:
+        print(f"\nRegion start={region['start_absolute']:.0f}, end={region['end_absolute']:.0f}")
 
     print(f"\n=== sudden brightness changes (centerline) ===")
     print(f"number of sudden changes: {len(sudden_changes)}")
@@ -221,6 +231,7 @@ def print_turbidity_report(features: Dict[str, Any], params) -> None:
             f"  change {i}: "
             f"{ev['direction']} | "
             f"start_norm={ev['start_norm']:.3f}, end_norm={ev['end_norm']:.3f}, "
+            f"start_absolute={ev['start_absolute']:.0f}, end_absolute={ev['end_absolute']:.0f},"
             f"ΔI={ev['intensity_change']:.3f}, "
             f"span={ev['span_pixels']} px ({ev['span_fraction']:.3f} of analysis height)"
         )
@@ -238,16 +249,17 @@ def print_turbidity_report(features: Dict[str, Any], params) -> None:
         )
 
     print("\n=== separation types from brightness profile ===")
+    full_h = TURBIDITY_PARAMS['analysis_height']
     for ev in separation_events:
+        pixel_y = int(ev.boundary_norm * full_h)
         print(
-            f"  {ev.type} at y={ev.boundary_norm:.3f} "
-            f"(Δμ={ev.delta_brightness:.3f}, "
-            f"{ev.top_phase} → {ev.bottom_phase})"
+            f"  {ev.type} at y={ev.boundary_norm:.3f} (pixel {pixel_y}) "
+            f"(Δμ={ev.delta_brightness:.3f}, {ev.top_phase} → {ev.bottom_phase})"
         )
 
     print("\n=== phase separation decision ===")
     print(f"phase separated: {phase_separated}")
-    print(f"phase separation info: {phase_sep_info}")
+    # print(f"phase separation info: {phase_sep_info}")
 
 def parse_args() -> argparse.Namespace:
     """
@@ -332,11 +344,13 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # updated: pass excluded regions + sudden changes + stats to plot
+    # plot turbidity profile
     center_profile = features["centerline_profile"]
     plot_path = save_turbidity_plot(
         image_path,
         center_profile.normalized_profile,
+        center_profile,
+        # center_profile.raw_profile,
         excluded_info=center_profile.excluded_regions,
         out_dir=out_dir,
         change_events=features.get("sudden_changes"),

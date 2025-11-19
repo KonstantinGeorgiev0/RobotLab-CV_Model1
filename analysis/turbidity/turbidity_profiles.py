@@ -24,7 +24,14 @@ class TurbidityProfile:
     peaks: Optional[np.ndarray] = None
     centerline_x: Optional[int] = None
 
+    @property
+    def full_image_height(self) -> int:
+        return self.excluded_regions['analysis_height']
 
+def normalize_to_full_image(y_abs: int, profile: TurbidityProfile) -> float:
+    """Convert absolute pixel to normalized 0–1 over the full image"""
+    full_h = profile.excluded_regions['analysis_height']
+    return y_abs / full_h
 
 # turbidity computation
 def _compute_turbidity_profile(
@@ -192,8 +199,13 @@ def compute_variance_between_changes(
     if bottom_idx <= top_idx:
         return {"overall_variance": 0.0, "segments": []}
 
-    # analysis region only (exclude top/bottom caps)
+    # exclude top and bottom
     analysis_region = norm[top_idx:bottom_idx]
+    H = len(norm)  # full centerline length
+
+    # absolute height normalized 0–1 across image
+    z_full = np.linspace(top_idx / H, bottom_idx / H, len(analysis_region))
+
     if len(analysis_region) > 1:
         overall_var = float(np.var(analysis_region))
     else:
@@ -235,6 +247,8 @@ def compute_variance_between_changes(
             "end_absolute": int(e),
             "start_normalized": float(s / height),
             "end_normalized": float(e / height),
+            "height_normalized": float(e - s) / height,
+            "z_full": z_full[s:e].tolist(),
             "height_pixels": int(e - s),
             "mean_brightness": mean,
             "variance": var,

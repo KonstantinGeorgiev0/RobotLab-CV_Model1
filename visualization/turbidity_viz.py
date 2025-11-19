@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional
 
 matplotlib.use('Agg')  # Non-interactive backend
 
-from config import CLASS_IDS, VISUALIZATION_PARAMS
+from config import CLASS_IDS, VISUALIZATION_PARAMS, TURBIDITY_PARAMS
 from robotlab_utils.bbox_utils import yolo_line_to_xyxy
 from ultralytics.utils.plotting import Annotator, colors
 from matplotlib.patches import Patch
@@ -21,6 +21,7 @@ from matplotlib.patches import Patch
 def save_turbidity_plot(
         path,
         v_norm,
+        turbidity_profile,
         excluded_info: Optional[Dict[str, Any]] = None,
         out_dir: Optional[Path] = None,
         change_events: Optional[List[Dict[str, Any]]] = None,
@@ -40,7 +41,14 @@ def save_turbidity_plot(
     Returns:
         str: Path to saved plot
     """
-    z = np.linspace(0, 1, len(v_norm))
+    z = np.linspace(0, TURBIDITY_PARAMS['analysis_height'], len(v_norm))
+
+    # norm = turbidity_profile.normalized_profile
+    # ex = turbidity_profile.excluded_regions
+    # top = ex['top_exclude_idx']
+    # bot = ex['bottom_exclude_idx']
+    # z = np.linspace(0, 1, bot - top)
+
 
     # ensure dir exists
     file_dir = Path(out_dir) / Path(path).stem
@@ -56,11 +64,18 @@ def save_turbidity_plot(
 
     # Turbidity profile
     ax1.plot(v_norm, z, 'b-', linewidth=2)
-    if excluded_info:
-        ax1.axhspan(0, excluded_info['excluded_top_fraction'], alpha=0.2, color='red')
-        ax1.axhspan(1 - excluded_info['excluded_bottom_fraction'], 1, alpha=0.2, color='orange')
+    # ax1.plot(norm[top:bot], z, 'b-', linewidth=2)
+    # ax1.set_ylabel("Normalized Height (analysis region only)")
 
-    # Overlay sudden brightness changes
+    # if excluded_info:
+    #     ax1.axhspan(0, excluded_info['excluded_top_fraction'], alpha=0.2, color='red')
+    #     ax1.axhspan(1 - excluded_info['excluded_bottom_fraction'], 1, alpha=0.2, color='orange')
+
+    if excluded_info:
+        ax1.axhspan(0, excluded_info['excluded_top_fraction'] * TURBIDITY_PARAMS['analysis_height'], alpha=0.2, color='red')
+        ax1.axhspan(TURBIDITY_PARAMS['analysis_height'] - excluded_info['excluded_bottom_fraction'] * TURBIDITY_PARAMS['analysis_height'],
+                    TURBIDITY_PARAMS['analysis_height'], alpha=0.2, color='orange')
+
     if change_events:
         inc_color = 'lime'
         dec_color = 'magenta'
@@ -68,29 +83,65 @@ def save_turbidity_plot(
         has_dec = False
 
         for ev in change_events:
-            # support both key styles
-            start = ev.get('start_norm', ev.get('start_normalized'))
-            end = ev.get('end_norm', ev.get('end_normalized'))
-            if start is None or end is None:
-                continue
+            start_pix = ev.get('start_absolute') or (ev.get('start_norm', 0) * TURBIDITY_PARAMS['analysis_height'])
+            end_pix = ev.get('end_absolute') or (ev.get('end_norm', 1) * TURBIDITY_PARAMS['analysis_height'])
 
-            direction = ev.get('direction', 'increasing')
+            if 'direction' not in ev:
+                # guess direction from brightness change
+                delta = ev.get('intensity_change', 0)
+                direction = 'increasing' if delta > 0 else 'decreasing'
+            else:
+                direction = ev['direction']
+
             color = inc_color if direction == 'increasing' else dec_color
             if direction == 'increasing':
                 has_inc = True
             else:
                 has_dec = True
 
-            # highlight vertical span of sudden change
-            ax1.axhspan(start, end, alpha=0.25, color=color)
+            # Highlight transition zone
+            ax1.axhspan(start_pix, end_pix, alpha=0.3, color=color, linewidth=0.8)
 
+        # Legend
         legend_patches = []
         if has_inc:
-            legend_patches.append(Patch(facecolor=inc_color, alpha=0.25, label='Sudden increase'))
+            legend_patches.append(Patch(facecolor=inc_color, alpha=0.3, label='Sudden increase ↑'))
         if has_dec:
-            legend_patches.append(Patch(facecolor=dec_color, alpha=0.25, label='Sudden decrease'))
+            legend_patches.append(Patch(facecolor=dec_color, alpha=0.3, label='Sudden decrease ↓'))
         if legend_patches:
-            ax1.legend(handles=legend_patches, loc='best', fontsize=8)
+            ax1.legend(handles=legend_patches, loc='upper right', fontsize=9)
+
+    # # Overlay sudden brightness changes
+    # if change_events:
+    #     inc_color = 'lime'
+    #     dec_color = 'magenta'
+    #     has_inc = False
+    #     has_dec = False
+    #
+    #     for ev in change_events:
+    #         # support both key styles
+    #         start = ev.get('start_norm', ev.get('start_normalized'))
+    #         end = ev.get('end_norm', ev.get('end_normalized'))
+    #         if start is None or end is None:
+    #             continue
+    #
+    #         direction = ev.get('direction', 'increasing')
+    #         color = inc_color if direction == 'increasing' else dec_color
+    #         if direction == 'increasing':
+    #             has_inc = True
+    #         else:
+    #             has_dec = True
+    #
+    #         # highlight vertical span of sudden change
+    #         ax1.axhspan(start, end, alpha=0.25, color=color)
+    #
+    #     legend_patches = []
+    #     if has_inc:
+    #         legend_patches.append(Patch(facecolor=inc_color, alpha=0.25, label='Sudden increase'))
+    #     if has_dec:
+    #         legend_patches.append(Patch(facecolor=dec_color, alpha=0.25, label='Sudden decrease'))
+    #     if legend_patches:
+    #         ax1.legend(handles=legend_patches, loc='best', fontsize=8)
 
     ax1.invert_yaxis()
     ax1.set_xlabel("Brightness (normalized)")
@@ -144,6 +195,11 @@ def save_turbidity_plot(
         merged_peaks = [g[np.argmax(gradient[g])] for g in groups]
         ax2.scatter(gradient[merged_peaks], z_grad[merged_peaks],
                     c='red', s=25, label='Significant peaks')
+
+    ax1.set_yticks(np.arange(0, TURBIDITY_PARAMS['analysis_height'] + 1, 50))
+    ax1.set_yticklabels([str(i) for i in range(0, TURBIDITY_PARAMS['analysis_height'] + 1, 50)])
+    ax1.set_ylim(0, TURBIDITY_PARAMS['analysis_height'])
+    ax1.invert_yaxis()
 
     ax2.invert_yaxis()
     ax2.set_xlabel("Gradient Magnitude")
