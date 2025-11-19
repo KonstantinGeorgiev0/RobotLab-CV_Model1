@@ -25,33 +25,34 @@ def save_turbidity_plot(
         excluded_info: Optional[Dict[str, Any]] = None,
         out_dir: Optional[Path] = None,
         change_events: Optional[List[Dict[str, Any]]] = None,
-        suffix: str = ".turbidity_enhanced.png"
+        suffix: str = ".turbidity_enhanced.png",
+        use_normalized_height: bool = True,
 ):
     """
-    Save a combined turbidity + gradient analysis plot (two subplots in one image).
+    Save a combined turbidity and gradient analysis plot.
 
     Args:
-        path: Path to the source image (used for naming)
+        path: Path to the source image
         v_norm: Normalized turbidity profile (1D numpy array)
-        excluded_info: Dict with excluded region info (can be None)
+        excluded_info: Dict with excluded region info
         out_dir: Directory to save output plot
-        change_events: List of sudden brightness change events (can be None)
+        change_events: List of sudden brightness change events
         suffix: Suffix for output plot file name
+        use_normalized_height: Whether to use normalized height for y-axis
 
     Returns:
         str: Path to saved plot
     """
-    z = np.linspace(0, TURBIDITY_PARAMS['analysis_height'], len(v_norm))
+    # analysis_region
+    analysis_height = TURBIDITY_PARAMS['analysis_height']
 
-    # norm = turbidity_profile.normalized_profile
-    # ex = turbidity_profile.excluded_regions
-    # top = ex['top_exclude_idx']
-    # bot = ex['bottom_exclude_idx']
-    # z = np.linspace(0, 1, bot - top)
-
+    if use_normalized_height:
+        z = np.linspace(0, 1, len(v_norm))
+    else:
+        z = np.linspace(0, analysis_height, len(v_norm))
 
     # ensure dir exists
-    file_dir = Path(out_dir) / Path(path).stem
+    file_dir = Path(out_dir) if out_dir else None
     file_dir.mkdir(parents=True, exist_ok=True)
 
     if file_dir is not None:
@@ -62,19 +63,21 @@ def save_turbidity_plot(
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6, 4), dpi=120)
 
-    # Turbidity profile
+    # turbidity profile
     ax1.plot(v_norm, z, 'b-', linewidth=2)
-    # ax1.plot(norm[top:bot], z, 'b-', linewidth=2)
-    # ax1.set_ylabel("Normalized Height (analysis region only)")
-
-    # if excluded_info:
-    #     ax1.axhspan(0, excluded_info['excluded_top_fraction'], alpha=0.2, color='red')
-    #     ax1.axhspan(1 - excluded_info['excluded_bottom_fraction'], 1, alpha=0.2, color='orange')
 
     if excluded_info:
-        ax1.axhspan(0, excluded_info['excluded_top_fraction'] * TURBIDITY_PARAMS['analysis_height'], alpha=0.2, color='red')
-        ax1.axhspan(TURBIDITY_PARAMS['analysis_height'] - excluded_info['excluded_bottom_fraction'] * TURBIDITY_PARAMS['analysis_height'],
-                    TURBIDITY_PARAMS['analysis_height'], alpha=0.2, color='orange')
+        top_frac = excluded_info['excluded_top_fraction']
+        bottom_frac = excluded_info['excluded_bottom_fraction']
+
+        if use_normalized_height:
+            ax1.axhspan(0, top_frac, alpha=0.2, color='red')
+            ax1.axhspan(1 - bottom_frac, 1, alpha=0.2, color='orange')
+        else:
+            top_px = analysis_height * top_frac
+            bot_px = analysis_height * bottom_frac
+            ax1.axhspan(0, top_px, alpha=0.2, color='red')
+            ax1.axhspan(analysis_height - bot_px, analysis_height, alpha=0.2, color='orange')
 
     if change_events:
         inc_color = 'lime'
@@ -83,8 +86,10 @@ def save_turbidity_plot(
         has_dec = False
 
         for ev in change_events:
-            start_pix = ev.get('start_absolute') or (ev.get('start_norm', 0) * TURBIDITY_PARAMS['analysis_height'])
-            end_pix = ev.get('end_absolute') or (ev.get('end_norm', 1) * TURBIDITY_PARAMS['analysis_height'])
+            start_px = ev.get('start_absolute') or (ev.get('start_norm', 0) * analysis_height)
+            end_px = ev.get('end_absolute') or (ev.get('end_norm', 1) * analysis_height)
+            start_norm = ev.get('start_norm', 0)
+            end_norm = ev.get('end_norm', 1)
 
             if 'direction' not in ev:
                 # guess direction from brightness change
@@ -99,67 +104,45 @@ def save_turbidity_plot(
             else:
                 has_dec = True
 
-            # Highlight transition zone
-            ax1.axhspan(start_pix, end_pix, alpha=0.3, color=color, linewidth=0.8)
+            # highlight transition zone
+            if use_normalized_height:
+                ax1.axhspan(start_norm, end_norm, alpha=0.3, color=color)
+            else:
+                ax1.axhspan(start_px, end_px, alpha=0.3, color=color)
 
-        # Legend
+        # legend
         legend_patches = []
         if has_inc:
-            legend_patches.append(Patch(facecolor=inc_color, alpha=0.3, label='Sudden increase ↑'))
+            legend_patches.append(Patch(facecolor=inc_color, alpha=0.3, label='Sudden increase'))
         if has_dec:
-            legend_patches.append(Patch(facecolor=dec_color, alpha=0.3, label='Sudden decrease ↓'))
+            legend_patches.append(Patch(facecolor=dec_color, alpha=0.3, label='Sudden decrease'))
         if legend_patches:
             ax1.legend(handles=legend_patches, loc='upper right', fontsize=9)
 
-    # # Overlay sudden brightness changes
-    # if change_events:
-    #     inc_color = 'lime'
-    #     dec_color = 'magenta'
-    #     has_inc = False
-    #     has_dec = False
-    #
-    #     for ev in change_events:
-    #         # support both key styles
-    #         start = ev.get('start_norm', ev.get('start_normalized'))
-    #         end = ev.get('end_norm', ev.get('end_normalized'))
-    #         if start is None or end is None:
-    #             continue
-    #
-    #         direction = ev.get('direction', 'increasing')
-    #         color = inc_color if direction == 'increasing' else dec_color
-    #         if direction == 'increasing':
-    #             has_inc = True
-    #         else:
-    #             has_dec = True
-    #
-    #         # highlight vertical span of sudden change
-    #         ax1.axhspan(start, end, alpha=0.25, color=color)
-    #
-    #     legend_patches = []
-    #     if has_inc:
-    #         legend_patches.append(Patch(facecolor=inc_color, alpha=0.25, label='Sudden increase'))
-    #     if has_dec:
-    #         legend_patches.append(Patch(facecolor=dec_color, alpha=0.25, label='Sudden decrease'))
-    #     if legend_patches:
-    #         ax1.legend(handles=legend_patches, loc='best', fontsize=8)
-
-    ax1.invert_yaxis()
+    # ax1.invert_yaxis()
     ax1.set_xlabel("Brightness (normalized)")
-    ax1.set_ylabel("Normalized Height")
+    if use_normalized_height:
+        ax1.set_ylabel("Normalized Height")
+    else:
+        ax1.set_ylabel("Height (pixels)")
     ax1.set_title("Brightness Profile", fontsize=10)
 
-    # Gradient analysis
+    # gradient analysis
     gradient = np.abs(np.gradient(v_norm))
-    z_grad = np.linspace(0, 1, len(gradient))
+    if use_normalized_height:
+        z_grad = np.linspace(0, 1, len(gradient))
+    else:
+        z_grad = np.linspace(0, analysis_height, len(gradient))
+
     ax2.plot(gradient, z_grad, 'g-', linewidth=2)
 
-    # Threshold & peak detection
+    # threshold and peak detection
     threshold = max(np.mean(gradient) + 2.5 * np.std(gradient), 0.06)
     ax2.axvline(threshold, color='r', linestyle='--', alpha=0.5)
 
     peak_positions = np.where(gradient > threshold)[0]
     if len(peak_positions) > 0:
-        # Mark centers of sudden changes
+        # mark centers of sudden changes
         if change_events:
             for ev in change_events:
                 start = ev.get('start_norm', ev.get('start_normalized'))
@@ -179,7 +162,8 @@ def save_turbidity_plot(
                     s=30,
                     marker=marker,
                     edgecolor='k',
-                    facecolor='none'
+                    facecolor='none',
+                    zorder=10,
                 )
 
         min_sep = int(len(v_norm) * 0.1)
@@ -193,23 +177,79 @@ def save_turbidity_plot(
         groups.append(current)
 
         merged_peaks = [g[np.argmax(gradient[g])] for g in groups]
-        ax2.scatter(gradient[merged_peaks], z_grad[merged_peaks],
-                    c='red', s=25, label='Significant peaks')
+        ax2.scatter(
+            gradient[merged_peaks],
+            z_grad[merged_peaks],
+            c='red', s=25, zorder=10,
+            label='Significant peaks')
 
-    ax1.set_yticks(np.arange(0, TURBIDITY_PARAMS['analysis_height'] + 1, 50))
-    ax1.set_yticklabels([str(i) for i in range(0, TURBIDITY_PARAMS['analysis_height'] + 1, 50)])
-    ax1.set_ylim(0, TURBIDITY_PARAMS['analysis_height'])
-    ax1.invert_yaxis()
-
+    if use_normalized_height:
+        ax1.set_ylim(1, 0)
+    else:
+        ax1.set_ylim(analysis_height, 0)
     ax2.invert_yaxis()
+
+    ax2.set_ylim(ax2.get_ylim())
     ax2.set_xlabel("Gradient Magnitude")
-    ax2.set_ylabel("Normalized Height")
+    ax2.set_ylabel("Normalized Height" if use_normalized_height else "Height (pixels)")
     ax2.set_title("Gradient Analysis", fontsize=10)
 
     plt.suptitle(Path(path).name, fontsize=9)
     plt.tight_layout()
     plt.savefig(out_path, bbox_inches='tight')
     plt.close()
+
+    return str(out_path)
+
+
+def save_turbidity_plot_analysis_only(
+        path,
+        v_norm,
+        excluded_info: Dict[str, Any],
+        out_dir: Optional[Path] = None,
+        suffix: str = ".turbidity_analysis_region.png",
+):
+    """
+    Save a turbidity and gradient plot that only shows the analysis band,
+    i.e., from top_exclude_idx to bottom_exclude_idx. Y-axis is normalized
+    0–1 within that band.
+    """
+    top_idx = excluded_info['top_exclude_idx']
+    bottom_idx = excluded_info['bottom_exclude_idx']
+
+    if bottom_idx <= top_idx:
+        return None
+
+    profile_slice = v_norm[top_idx:bottom_idx]
+
+    # y space
+    z = np.linspace(0, 1, len(profile_slice))
+
+    file_dir = Path(out_dir) if out_dir else Path(path).parent
+    file_dir.mkdir(parents=True, exist_ok=True)
+    out_path = file_dir / (Path(path).stem + suffix)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6, 4), dpi=120)
+
+    # brightness
+    ax1.plot(profile_slice, z, 'b-', linewidth=2)
+    ax1.invert_yaxis()
+    ax1.set_xlabel("Brightness (normalized)")
+    ax1.set_ylabel("Normalized Height (analysis only)")
+    ax1.set_title("Brightness Profile (analysis region)", fontsize=10)
+
+    # gradient in analysis region
+    gradient = np.abs(np.gradient(profile_slice))
+    z_grad = np.linspace(0, 1, len(gradient))
+    ax2.plot(gradient, z_grad, 'g-', linewidth=2)
+    ax2.invert_yaxis()
+    ax2.set_xlabel("Gradient Magnitude")
+    ax2.set_ylabel("Normalized Height (analysis only)")
+    ax2.set_title("Gradient Analysis (analysis region)", fontsize=10)
+
+    plt.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
 
     return str(out_path)
 

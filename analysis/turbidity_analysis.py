@@ -12,7 +12,7 @@ from analysis.turbidity.turbidity_metrics import analyze_region_turbidity
 from analysis.turbidity.turbidity_profiles import compute_turbidity_profile, compute_variance_between_changes, \
     compute_centerline_turbidity_profile
 from analysis.turbidity.turbidity_segmentation import find_brightness_threshold_regions, segment_brightness_regions, \
-    detect_sudden_brightness_changes, hybrid_segment_profile
+    detect_sudden_brightness_changes
 from analysis.turbidity.turbidity_separation import label_segments, detect_separation_types, \
     detect_phase_separation_from_separations
 
@@ -20,11 +20,12 @@ import cv2
 import numpy as np
 
 from config import TURBIDITY_PARAMS
-from visualization.turbidity_viz import save_turbidity_plot
+from visualization.turbidity_viz import save_turbidity_plot, save_turbidity_plot_analysis_only
+
 
 def extract_turbidity_features(img: np.ndarray, params) -> Dict[str, Any]:
     """
-    Extract all turbidity-related features from a single vial image.
+    Extract all turbidity-related features from a single vial image
     """
 
     # compute turbidity profiles
@@ -92,19 +93,10 @@ def extract_turbidity_features(img: np.ndarray, params) -> Dict[str, Any]:
         gradient_threshold=TURBIDITY_PARAMS["gradient_threshold"],
     )
 
-    # # hybrid segmentation
-    # brightness_segments = hybrid_segment_profile(
-    #     center_profile,
-    #     sudden_changes=sudden_changes,
-    #     max_std_for_homogeneous=0.12,
-    #     min_region_size=TURBIDITY_PARAMS["min_region_size"],
-    # )
-
     # label segments with phases and detect separation events
     analysis_height = center_profile.excluded_regions.get("analysis_height", len(center_profile.raw_profile))
 
     labeled_segments = label_segments(
-        # segments,
         brightness_segments,
         analysis_height=analysis_height,
     )
@@ -143,6 +135,7 @@ def extract_turbidity_features(img: np.ndarray, params) -> Dict[str, Any]:
         # phase labeling and separation
         "labeled_segments": labeled_segments,
         "separation_events": separation_events,
+        "dict_separation_events": [event.to_dict() for event in separation_events],
         "phase_separated": phase_sep,
         "phase_separation_info": phase_sep_info,
     }
@@ -155,17 +148,25 @@ def features_to_json_dict(
     state_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Convert turbidity features into a JSON-friendly dict.
-    Designed to be compact and useful for downstream comparisons.
+    Convert turbidity features into a JSON dict
     """
     global_stats = features.get("global_stats", {})
     variance_stats = features.get("variance_stats", {})
     phase_separated = bool(features.get("phase_separated", False))
     phase_sep_info = features.get("phase_separation_info", {})
+    sudden_brightness_changes = features.get("sudden_changes", [])
+
+    # convert ifaces to json
+    interfaces_json, air_iface_json = (
+        [interface.to_dict() for interface in phase_sep_info.get("interfaces", [])],
+        [air_iface.to_dict() for air_iface in phase_sep_info.get("air_interface", [])]
+    )
+    phase_sep_info["interfaces"] = interfaces_json
+    phase_sep_info["air_interface"] = air_iface_json
 
     return {
         "image": str(image_path),
-        "state": state_label,  # e.g. "stable", "gel", "phase_separated"
+        "state": state_label,
         "global_stats": {
             "mean": float(global_stats.get("mean", 0.0)),
             "std": float(global_stats.get("std", 0.0)),
@@ -182,6 +183,7 @@ def features_to_json_dict(
         "overall_variance": float(variance_stats.get("overall_variance", 0.0)),
         "phase_separated": phase_separated,
         "phase_separation_info": phase_sep_info,
+        "sudden_brightness_changes": sudden_brightness_changes,
     }
 
 
@@ -208,7 +210,9 @@ def print_turbidity_report(features: Dict[str, Any], params) -> None:
     ex_full = full_profile.excluded_regions
     ex_center = center_profile.excluded_regions
 
-    print("turbidity statistics:", global_stats)
+    print("\n=== turbidity statistics ===")
+    for key, val in global_stats.items():
+        print(f"{key:15s}: {val}")
 
     print("\n=== centerline turbidity analysis ===")
     print(f"centerline position: x={ex_center.get('centerline_x', 'n/a')}")
@@ -250,11 +254,11 @@ def print_turbidity_report(features: Dict[str, Any], params) -> None:
 
     print("\n=== separation types from brightness profile ===")
     full_h = TURBIDITY_PARAMS['analysis_height']
-    for ev in separation_events:
-        pixel_y = int(ev.boundary_norm * full_h)
+    for event in separation_events:
+        pixel_y = int(event.boundary_norm * full_h)
         print(
-            f"  {ev.type} at y={ev.boundary_norm:.3f} (pixel {pixel_y}) "
-            f"(Δμ={ev.delta_brightness:.3f}, {ev.top_phase} → {ev.bottom_phase})"
+            f"  {event.type} at y={event.boundary_norm:.3f} (pixel {pixel_y}) "
+            f"(Δμ={event.delta_brightness:.3f}, {event.top_phase} → {event.bottom_phase})"
         )
 
     print("\n=== phase separation decision ===")
@@ -341,22 +345,31 @@ def main() -> None:
     # print report
     print_turbidity_report(features, args)
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    file_dir = Path(args.out_dir) / image_path.stem
+    file_dir.mkdir(parents=True, exist_ok=True)
 
     # plot turbidity profile
     center_profile = features["centerline_profile"]
     plot_path = save_turbidity_plot(
-        image_path,
-        center_profile.normalized_profile,
-        center_profile,
-        # center_profile.raw_profile,
+        path=image_path,
+        v_norm=center_profile.normalized_profile,
+        turbidity_profile=center_profile,
         excluded_info=center_profile.excluded_regions,
-        out_dir=out_dir,
+        out_dir=file_dir,
         change_events=features.get("sudden_changes"),
         suffix=".turbidity.png",
+        use_normalized_height=True,
     )
     print(f"\nsaved turbidity plot to: {plot_path}")
+
+    # plot turbidity of analysis region only
+    analysis_region_plot = save_turbidity_plot_analysis_only(
+        path=image_path,
+        v_norm=center_profile.normalized_profile,
+        excluded_info=center_profile.excluded_regions,
+        out_dir=file_dir,
+    )
+    print(f"\nsaved turbidity plot of analysis region to: {analysis_region_plot}")
 
     # JSON export
     if getattr(args, "save_json", False):
@@ -365,7 +378,7 @@ def main() -> None:
             features=features,
             state_label=getattr(args, "state_label", None),
         )
-        json_path = out_dir / f"{image_path.stem}.turbidity.json"
+        json_path = file_dir / f"{image_path.stem}.turbidity.json"
         with open(json_path, "w") as f:
             json.dump(json_obj, f, indent=2)
         print(f"saved turbidity metrics to: {json_path}")

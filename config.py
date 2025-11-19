@@ -62,15 +62,17 @@ TURBIDITY_PARAMS = {
     'bottom_exclude_fraction': 0.10, # Bottom exclusion fraction
     'right_exclude_fraction': 0.25,  # Right exclusion fraction
     'left_exclude_fraction': 0.25,   # Left exclusion fraction
+
     'gradient_threshold_sigma': 2.5, # Sigma multiplier for gradient threshold
     'gradient_threshold_min': 0.15,  # Minimum gradient threshold
     'peak_separation_fraction': 0.05, # Minimum separation between peaks
     'brightness_threshold': 0.5,     # Detect where brightness goes above this
     'centerline_width': 15,          # Width of centerline (pixels)
+
     "air_max": 0.15,                 # air/empty
     "translucent_max": 0.25,         # translucent liquid
     "min_segment_height_frac": 0.01,  # ignore tiny slices
-    "liquid_liquid_contrast": 0.10,   # min |Δμ| for liquid–liquid separation
+    "liquid_liquid_contrast": 0.15,   # min |Δμ| for liquid–liquid separation
 
     "min_region_size": 10,
     "gradient_threshold": 0.04,
@@ -79,9 +81,10 @@ TURBIDITY_PARAMS = {
     "min_liquid_interfaces": 1,
     "min_vertical_span": 0.05,
 
-    "min_intensity_change": 0.50,    # min change of brightness intensity
+    # detect_sudden_brightness_changes
+    "min_intensity_change": 0.10,    # min change of brightness intensity
     "min_span_fraction": 0.05,       # min vertical span (fraction of analysis height) to ignore noise
-    "max_span_fraction": 0.40,       # max vertical span (fraction of analysis height) to still be considered sudden
+    "max_span_fraction": 0.80,       # max vertical span (fraction of analysis height) to still be considered sudden
     "smoothing_sigma": 1.5,          # Gaussian smoothing sigma for brightness profile before change detection
     "gradient_epsilon": 0.05         # Gradient epsilon for change detection
 }

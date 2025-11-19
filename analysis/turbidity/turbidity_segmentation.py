@@ -38,19 +38,19 @@ def segment_brightness_regions(
     # analysis region
     start_idx = excluded['top_exclude_idx']
     end_idx = excluded['bottom_exclude_idx']
-    analysis_region = norm_profile[start_idx:end_idx]
+    excluded_analysis_region = norm_profile[start_idx:end_idx]
 
-    if len(analysis_region) < min_region_size:
+    if len(excluded_analysis_region) < min_region_size:
         return []
 
-    # Smooth profile to reduce noise
-    smoothed = gaussian_filter1d(analysis_region, sigma=smoothing_sigma)
+    # smooth profile to reduce noise
+    smoothed = gaussian_filter1d(excluded_analysis_region, sigma=smoothing_sigma)
 
     gradient = np.gradient(smoothed)
     abs_gradient = np.abs(gradient)
 
     # brightness-change based boundaries
-    full_height = excluded['analysis_height']
+    # full_height = excluded['analysis_height']
     # y_positions = np.linspace(0, 1, full_height)
 
     change_threshold = TURBIDITY_PARAMS.get(
@@ -66,7 +66,7 @@ def segment_brightness_regions(
     )
 
     # build segments between change points
-    boundaries = [0] + change_points.tolist() + [len(analysis_region)]
+    boundaries = [0] + change_points.tolist() + [len(excluded_analysis_region)]
 
     regions: List[Dict[str, Any]] = []
 
@@ -79,7 +79,7 @@ def segment_brightness_regions(
             continue
 
         segment_data = smoothed[seg_start:seg_end]
-        raw_segment_data = analysis_region[seg_start:seg_end]
+        raw_segment_data = excluded_analysis_region[seg_start:seg_end]
 
         mean_brightness = float(np.mean(segment_data))
         std_brightness = float(np.std(segment_data))
@@ -92,32 +92,37 @@ def segment_brightness_regions(
         mean_gradient = float(np.mean(segment_gradient))
         max_gradient = float(np.max(segment_gradient))
 
-        # normalized positions
-        start_normalized = seg_start / len(analysis_region)
-        end_normalized = seg_end / len(analysis_region)
-        center_normalized = (start_normalized + end_normalized) / 2.0
+        # normalized positions in excluded image
+        start_normalized_after_exclusion_region = seg_start / len(excluded_analysis_region)
+        end_normalized_after_exclusion_region = seg_end / len(excluded_analysis_region)
+        center_normalized_excluded_region = (start_normalized_after_exclusion_region + end_normalized_after_exclusion_region) / 2.0
 
-        # absolute positions in resized image
+        # absolute positions in excluded image
+        start_absolute_after_exclusion_region = start_idx + seg_start
+        end_absolute_after_exclusion_region = start_idx + seg_end
+        center_absolute_after_exclusion_region = (start_absolute_after_exclusion_region + end_absolute_after_exclusion_region) / 2.0
+
+        # norm pos in original image
+        start_normalized_original_image = start_idx + seg_start / len(excluded_analysis_region)
+        end_normalized_original_image = start_idx + seg_end / len(excluded_analysis_region)
+        center_normalized_original_image = (start_normalized_original_image + end_normalized_original_image) / 2.0
+
+        # abs pos in original image
         start_absolute = start_idx + seg_start
         end_absolute = start_idx + seg_end
-
-        print(
-            f"\nRegion id: {i}"
-            f"\n region height: {region_height}"
-            f"\n mean brightness: {mean_brightness}"
-            f"\n\nstart normalized: {start_normalized}"
-            f"\n end normalized: {end_normalized}"
-            f"\n variance: {variance}"
-            f"\n\nis homogeneous: {std_brightness < similarity_threshold}"
-            f"\nstart absolute: {start_absolute}"
-            f"\n end absolute: {end_absolute}"
-        )
+        center_absolute = (start_absolute + end_absolute) / 2.0
 
         regions.append({
             'region_id': i,
-            'start_normalized': float(start_normalized),
-            'end_normalized': float(end_normalized),
-            'center_normalized': float(center_normalized),
+            'start_normalized_analysis_region': float(start_normalized_after_exclusion_region),
+            'end_normalized_analysis_region': float(end_normalized_after_exclusion_region),
+            'center_normalized_analysis_region': float(center_normalized_excluded_region),
+            'start_absolute_analysis_region': int(start_absolute_after_exclusion_region),
+            'end_absolute_analysis_region': int(end_absolute_after_exclusion_region),
+            'center_absolute_analysis_region': int(center_absolute_after_exclusion_region),
+            'start_normalized': float(start_normalized_original_image),
+            'end_normalized': float(end_normalized_original_image),
+            'center_normalized': float(center_normalized_original_image),
             'start_absolute': int(start_absolute),
             'end_absolute': int(end_absolute),
             'height_pixels': int(region_height),
@@ -131,123 +136,12 @@ def segment_brightness_regions(
             'mean_gradient': mean_gradient,
             'max_gradient': max_gradient,
             'is_homogeneous': std_brightness < similarity_threshold,
-            # 'raw_values': raw_segment_data.tolist(),
-            # 'smoothed_values': segment_data.tolist(),
+            'raw_values': raw_segment_data.tolist(),
+            'smoothed_values': segment_data.tolist(),
         })
 
     return regions
 
-
-# def segment_brightness_regions(
-#         profile: TurbidityProfile,
-#         similarity_threshold: float = TURBIDITY_PARAMS["similarity_threshold"],
-#         min_region_size: int = TURBIDITY_PARAMS["min_region_size"],
-#         smoothing_sigma: float = TURBIDITY_PARAMS["smoothing_sigma"],
-#         gradient_threshold: float = TURBIDITY_PARAMS["gradient_threshold"],
-# ) -> List[Dict[str, Any]]:
-#     """
-#     Segment the turbidity profile into regions of similar brightness.
-#     Uses gradient-based boundary detection to split profile into homogeneous segments.
-#
-#     Args:
-#         profile: TurbidityProfile object
-#         similarity_threshold: Maximum std deviation within a region to consider it homogeneous
-#         min_region_size: Minimum number of pixels for a valid region
-#         smoothing_sigma: Gaussian smoothing sigma for noise reduction
-#         gradient_threshold: Threshold for detecting region boundaries (peaks in gradient)
-#
-#     Returns:
-#         List of region dictionaries with statistics and position info
-#     """
-#     norm_profile = profile.normalized_profile
-#     excluded = profile.excluded_regions
-#
-#     # Extract analysis region
-#     start_idx = excluded['top_exclude_idx']
-#     end_idx = excluded['bottom_exclude_idx']
-#     analysis_region = norm_profile[start_idx:end_idx]
-#
-#     if len(analysis_region) < min_region_size:
-#         return []
-#
-#     # Smooth profile to reduce noise
-#     smoothed = gaussian_filter1d(analysis_region, sigma=smoothing_sigma)
-#
-#     # Calculate gradient to find boundaries
-#     gradient = np.gradient(smoothed)
-#     abs_gradient = np.abs(gradient)
-#
-#     # Find boundary points
-#     boundary_peaks, _ = find_peaks(abs_gradient, height=gradient_threshold, distance=10)
-#
-#     # Create segments between boundaries
-#     segment_boundaries = [0] + boundary_peaks.tolist() + [len(analysis_region)]
-#
-#     regions = []
-#
-#     for i in range(len(segment_boundaries) - 1):
-#         seg_start = segment_boundaries[i]
-#         seg_end = segment_boundaries[i + 1]
-#
-#         # Skip if segment too small
-#         if seg_end - seg_start < min_region_size:
-#             continue
-#
-#         segment_data = smoothed[seg_start:seg_end]
-#         raw_segment_data = analysis_region[seg_start:seg_end]
-#
-#         # Calculate statistics
-#         mean_brightness = np.mean(segment_data)
-#         std_brightness = np.std(segment_data)
-#         variance = np.var(segment_data)
-#         min_brightness = np.min(segment_data)
-#         max_brightness = np.max(segment_data)
-#
-#         # Calculate gradient statistics within region
-#         segment_gradient = abs_gradient[seg_start:seg_end]
-#         mean_gradient = np.mean(segment_gradient)
-#         max_gradient = np.max(segment_gradient)
-#
-#         # Normalized positions
-#         start_normalized = seg_start / len(analysis_region)
-#         end_normalized = seg_end / len(analysis_region)
-#         center_normalized = (start_normalized + end_normalized) / 2
-#
-#         # Absolute positions in resized image
-#         start_absolute = start_idx + seg_start
-#         end_absolute = start_idx + seg_end
-#
-#         # Height of region
-#         region_height = seg_end - seg_start
-#
-#         print(f"\nRegion id: {i}\n region height: {region_height}\n mean brightness: {mean_brightness}\n"
-#               f"\n  is homogeneous: {std_brightness < similarity_threshold}"
-#               f"\n  start absolute: {start_absolute}\n end absolute: {end_absolute}")
-#
-#         regions.append({
-#             'region_id': i,
-#             'start_normalized': float(start_normalized),
-#             'end_normalized': float(end_normalized),
-#             'center_normalized': float(center_normalized),
-#             'start_absolute': int(start_absolute),
-#             'end_absolute': int(end_absolute),
-#             'height_pixels': int(region_height),
-#             'mean_brightness': float(mean_brightness),
-#             'std_brightness': float(std_brightness),
-#             'variance': float(variance),
-#             'min_brightness': float(min_brightness),
-#             'max_brightness': float(max_brightness),
-#             'peak_brightness': float(max_brightness),
-#             'brightness_range': float(max_brightness - min_brightness),
-#             'mean_gradient': float(mean_gradient),
-#             'max_gradient': float(max_gradient),
-#             'is_homogeneous': std_brightness < similarity_threshold,
-#             # 'raw_values': raw_segment_data.tolist(),
-#             # 'smoothed_values': segment_data.tolist()
-#         })
-#
-#     return regions
-#
 
 def find_brightness_threshold_regions(
         profile: TurbidityProfile,
@@ -255,7 +149,7 @@ def find_brightness_threshold_regions(
         min_region_size: int = TURBIDITY_PARAMS.get('min_region_size', 10)
 ) -> Tuple[List[float], List[Dict[str, Any]]]:
     """
-    finds regions where brightness exceeds threshold
+    Finds regions where brightness exceeds threshold
     and returns detailed statistics for each region.
 
     Args:
@@ -271,7 +165,7 @@ def find_brightness_threshold_regions(
     norm = profile.normalized_profile
     excluded = profile.excluded_regions
 
-    # Only consider analysis region
+    # analysis region
     start_idx = excluded['top_exclude_idx']
     end_idx = excluded['bottom_exclude_idx']
     region_norm = norm[start_idx:end_idx]
@@ -279,15 +173,15 @@ def find_brightness_threshold_regions(
     if len(region_norm) == 0:
         return [], []
 
-    # Map indices to normalized height
+    # map indices to normalized height
     full_height = excluded['analysis_height']
     y_positions = np.linspace(0, 1, full_height)
     region_y = y_positions[start_idx:end_idx]
 
-    # Find where brightness exceeds threshold
+    # where brightness exceeds threshold
     above_threshold = region_norm > threshold
 
-    # Find crossing points
+    # crossing points
     crossing_points = []
     crossed = False
     for i, (val, y) in enumerate(zip(region_norm, region_y)):
@@ -295,7 +189,7 @@ def find_brightness_threshold_regions(
             crossing_points.append(float(y))
             crossed = True
 
-    # Find contiguous regions above threshold
+    # contiguous regions above threshold
     regions = []
     in_region = False
     start_idx_local = None
@@ -305,12 +199,12 @@ def find_brightness_threshold_regions(
             start_idx_local = i
             in_region = True
         elif not val and in_region:
-            # End of region
+            # end of region
             end_idx_local = i
             region_size = end_idx_local - start_idx_local
 
             if region_size >= min_region_size:
-                # Extract statistics for this region
+                # statistics for region
                 region_data = region_norm[start_idx_local:end_idx_local]
 
                 regions.append({
@@ -334,7 +228,7 @@ def find_brightness_threshold_regions(
 
             in_region = False
 
-    # Handle case where region extends to end
+    # handle case where region extends to end
     if in_region and len(region_y) - start_idx_local >= min_region_size:
         region_data = region_norm[start_idx_local:]
 
@@ -365,16 +259,11 @@ def _find_brightness_change_points(
         window: int,
 ) -> np.ndarray:
     """
-    Find vertical positions where the *average* brightness changes sharply.
+    Find vertical positions where avg brightness changes sharply.
 
     For each candidate position i we compare the mean brightness of a small
     window above and a small window below i. If the absolute difference
-    between these two means exceeds `change_threshold`, i is a change-point.
-
-    This catches:
-      - hard steps (air → liquid)
-      - softer transitions that happen over a few pixels
-    without requiring a long monotonic gradient segment.
+    between these two means exceeds change_threshold, i is a change-point.
     """
     n = len(smoothed)
     if n < 2 * window + 3:
@@ -423,9 +312,9 @@ def detect_sudden_brightness_changes(
     smoothed = gaussian_filter1d(analysis_region, sigma=smoothing_sigma)
 
     N = len(analysis_region)
+    # sudden brightness change boundaries
     min_span_pixels = max(1, int(N * min_span_fraction))
     max_span_pixels = max(min_span_pixels, int(N * max_span_fraction))
-
     window = max(3, min_span_pixels // 2)
 
     change_points = _find_brightness_change_points(
@@ -472,205 +361,3 @@ def detect_sudden_brightness_changes(
         })
 
     return events
-
-
-# def detect_sudden_brightness_changes(
-#         profile: TurbidityProfile,
-#         min_intensity_change: float,
-#         min_span_fraction: float,
-#         max_span_fraction: float,
-#         smoothing_sigma: float,
-#         gradient_epsilon: float
-# ) -> List[Dict[str, Any]]:
-#     """
-#     Detect sudden brightness changes over a short vertical span.
-#
-#     A sudden change is defined as a mostly-monotonic segment of the
-#     (smoothed) brightness profile where:
-#       - |ΔI| >= min_intensity_change (normalized units)
-#       - span_fraction is between [min_span_fraction, max_span_fraction]
-#
-#     The function returns a list of events with:
-#       - start/end (absolute indices + normalized 0–1 height)
-#       - intensity_change
-#       - span (pixels + fraction)
-#       - direction: 'increasing' or 'decreasing'
-#     """
-#     norm = profile.normalized_profile
-#     excluded = profile.excluded_regions
-#
-#     start_idx = excluded['top_exclude_idx']
-#     end_idx = excluded['bottom_exclude_idx']
-#     full_height = excluded['analysis_height']
-#
-#     analysis_region = norm[start_idx:end_idx]
-#
-#     if len(analysis_region) == 0:
-#         return []
-#
-#     # Smooth to reduce noise
-#     smoothed = gaussian_filter1d(analysis_region, sigma=smoothing_sigma)
-#
-#     # Gradient of smoothed profile
-#     grad = np.gradient(smoothed)
-#     abs_grad = np.abs(grad)
-#
-#     N = len(analysis_region)
-#     if N < 3:
-#         return []
-#
-#     min_span_pixels = max(1, int(N * min_span_fraction))
-#     max_span_pixels = max(min_span_pixels, int(N * max_span_fraction))
-#
-#     events: List[Dict[str, Any]] = []
-#
-#     in_segment = False
-#     seg_start = 0
-#     seg_sign = 0
-#
-#     def close_segment(seg_start_idx: int, seg_end_idx: int, sign: int):
-#         """Evaluate candidate segment and add to events if it qualifies."""
-#         span = seg_end_idx - seg_start_idx
-#         if span <= 0:
-#             return
-#
-#         if span < min_span_pixels or span > max_span_pixels:
-#             return
-#
-#         start_val = smoothed[seg_start_idx]
-#         end_val = smoothed[seg_end_idx]
-#         intensity_change = end_val - start_val
-#
-#         if abs(intensity_change) < min_intensity_change:
-#             return
-#
-#         direction = "increasing" if intensity_change > 0 else "decreasing"
-#
-#         # absolute pixel indices
-#         start_abs = start_idx + seg_start_idx
-#         end_abs = start_idx + seg_end_idx
-#
-#         start_norm = start_abs / full_height
-#         end_norm = end_abs / full_height
-#
-#         segment_grad = abs_grad[seg_start_idx:seg_end_idx + 1]
-#         mean_grad = float(np.mean(segment_grad))
-#         max_grad = float(np.max(segment_grad))
-#
-#         events.append({
-#             "start_index": int(seg_start_idx),
-#             "end_index": int(seg_end_idx),
-#             "start_absolute": int(start_abs),
-#             "end_absolute": int(end_abs),
-#             "start_norm": float(start_norm),
-#             "end_norm": float(end_norm),
-#             "direction": direction,
-#             "intensity_change": float(intensity_change),
-#             "span_pixels": int(span),
-#             "span_fraction": float(span / N),
-#             "mean_gradient": mean_grad,
-#             "max_gradient": max_grad,
-#         })
-#
-#     # walk gradient and build monotonic segments
-#     for i, g in enumerate(grad):
-#         if abs(g) < gradient_epsilon:
-#             # close segment if open
-#             if in_segment:
-#                 close_segment(seg_start, max(i - 1, seg_start), seg_sign)
-#                 in_segment = False
-#                 seg_sign = 0
-#             continue
-#
-#         sign = 1 if g > 0 else -1
-#
-#         if not in_segment:
-#             in_segment = True
-#             seg_start = i
-#             seg_sign = sign
-#         else:
-#             # sign change: close previous, start new
-#             if sign != seg_sign:
-#                 close_segment(seg_start, max(i - 1, seg_start), seg_sign)
-#                 in_segment = True
-#                 seg_start = i
-#                 seg_sign = sign
-#
-#     # Close any open segment at the end
-#     if in_segment:
-#         close_segment(seg_start, N - 1, seg_sign)
-#
-#     return events
-
-# hybrid segmentation
-def hybrid_segment_profile(
-    profile: TurbidityProfile,
-    sudden_changes: List[Dict[str, Any]],
-    max_std_for_homogeneous: float = 0.12,
-    min_region_size: int = TURBIDITY_PARAMS["min_region_size"],
-) -> List[Dict[str, Any]]:
-
-    norm = profile.normalized_profile
-    ex = profile.excluded_regions
-    start_idx = ex['top_exclude_idx']
-    end_idx = ex['bottom_exclude_idx']
-    analysis_height = end_idx - start_idx
-
-    smoothed = gaussian_filter1d(norm[start_idx:end_idx], sigma=1.0)
-
-    # segment boundaries from sudden changes
-    boundaries = [0]
-    for ev in sudden_changes:
-        # use middle or end of transition
-        mid = int((ev["start_absolute"] + ev["end_absolute"]) / 2) - start_idx
-        mid = max(0, min(len(smoothed)-1, mid))
-        boundaries.append(mid)
-    boundaries.append(len(smoothed))
-
-    regions = []
-    for i in range(len(boundaries) - 1):
-        s, e = boundaries[i], boundaries[i+1]
-        if e - s < min_region_size:
-            continue
-
-        segment = smoothed[s:e]
-        mean_b = float(np.mean(segment))
-        std_b = float(np.std(segment))
-
-        # further split high var regions
-        subregions = [segment]
-        if std_b > max_std_for_homogeneous and (e - s) > 60:
-            # recursive split on high var regions
-            mid = (s + e) // 2
-            sub1 = smoothed[s:mid]
-            sub2 = smoothed[mid:e]
-            if len(sub1) >= min_region_size and np.std(sub1) < max_std_for_homogeneous:
-                subregions = [sub1, sub2]
-            elif len(sub2) >= min_region_size and np.std(sub2) < max_std_for_homogeneous:
-                subregions = [sub1, sub2]
-
-        for j, subseg in enumerate(subregions):
-            ss, ee = s if j == 0 else mid, e if j == len(subregions)-1 else mid if j == 0 else e
-            sub_len = len(subseg)
-            if sub_len < min_region_size:
-                continue
-
-            abs_start = start_idx + ss
-            abs_end = start_idx + ee
-
-            regions.append({
-                "region_id": len(regions),
-                # "start_normalized": float(ss / analysis_height),
-                # "end_normalized": float(ee / analysis_height),
-                'start_normalized': normalize_to_full_image(start_idx + ss, profile),
-                'end_normalized': normalize_to_full_image(start_idx + ee, profile),
-                "start_absolute": int(abs_start),
-                "end_absolute": int(abs_end),
-                "height_pixels": int(ee - ss),
-                "mean_brightness": float(np.mean(subseg)),
-                "std_brightness": float(np.std(subseg)),
-                "variance": float(np.var(subseg)),
-                "is_homogeneous": float(np.std(subseg)) < max_std_for_homogeneous,
-            })
-
-    return regions

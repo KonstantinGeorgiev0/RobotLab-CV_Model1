@@ -203,7 +203,7 @@ def compute_variance_between_changes(
     analysis_region = norm[top_idx:bottom_idx]
     H = len(norm)  # full centerline length
 
-    # absolute height normalized 0–1 across image
+    # analysis height normalized 0–1 across image
     z_full = np.linspace(top_idx / H, bottom_idx / H, len(analysis_region))
 
     if len(analysis_region) > 1:

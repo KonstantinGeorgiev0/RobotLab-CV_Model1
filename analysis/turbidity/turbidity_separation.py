@@ -13,14 +13,27 @@ from config import TURBIDITY_PARAMS
 
 @dataclass
 class SeparationEvent:
-    type: str
+    type: str                 # separation interface type
     boundary_norm: float      # normalized y position of the boundary
     boundary_pixel: int       # pixel position of the boundary
     top_phase: str            # phase of upper segment
     bottom_phase: str         # phase of lower segment
     delta_brightness: float   # absolute difference in mean brightness
-    top_segment: Dict[str, Any]
-    bottom_segment: Dict[str, Any]
+    top_segment: Dict[str, Any] # upper segment data
+    bottom_segment: Dict[str, Any] # lower segment data
+
+    # convert to dict for json serialization
+    def to_dict(self):
+        return {
+            "type": self.type,
+            "boundary_norm": float(self.boundary_norm),
+            "boundary_pixel": int(self.boundary_pixel),
+            "top_phase": self.top_phase,
+            "bottom_phase": self.bottom_phase,
+            "delta_brightness": float(self.delta_brightness),
+            "top_segment": self.top_segment,
+            "bottom_segment": self.bottom_segment,
+        }
 
 
 def detect_phase_separation_from_separations(
@@ -37,12 +50,15 @@ def detect_phase_separation_from_separations(
     liquid_types = {"opaque-translucent", "translucent-opaque", "liquid-liquid"}
 
     # collect all liquid-liquid-type interfaces
-    liquid_ifaces = [ev for ev in separation_events if ev.type in liquid_types]
+    liquid_ifaces = [event for event in separation_events if event.type in liquid_types]
+    air_iface = [event for event in separation_events if event.type == "air-liquid"]
 
     if len(liquid_ifaces) < min_liquid_interfaces:
         return False, {
             "reason": "too_few_liquid_interfaces",
-            "num_liquid_interfaces": len(liquid_ifaces)
+            "num_liquid_interfaces": len(liquid_ifaces),
+            "interfaces": liquid_ifaces,
+            "air_interface": air_iface,
         }
 
     # check vertical span
@@ -57,10 +73,10 @@ def detect_phase_separation_from_separations(
     #     }
 
     return True, {
-        "reason": "ok",
         "num_liquid_interfaces": len(liquid_ifaces),
         "span": span,
         "interfaces": liquid_ifaces,
+        "air_interface": air_iface,
     }
 
 
@@ -120,7 +136,7 @@ def detect_separation_types(
         segments: List[Dict[str, Any]]
 ) -> List[SeparationEvent]:
     """
-    given labeled segments (with 'phase' and 'mean_brightness'), return a list of separation events
+    given labeled segments, return a list of separation events
     with types:
       - 'air-liquid'
       - 'liquid-liquid'
@@ -143,6 +159,8 @@ def detect_separation_types(
         # use end of upper segment as boundary position
         boundary_norm = float(upper.get("end_normalized", upper.get("start_normalized", 0.0)))
         boundary_pixel = int(boundary_norm * TURBIDITY_PARAMS["analysis_height"])
+        # get boundaries for full image height
+        boundary_norm_full_img = boundary_norm * TURBIDITY_PARAMS["analysis_height"] / TURBIDITY_PARAMS["analysis_height"]
 
         # skip small contrast differences
         if delta_mu < contrast_min:
@@ -158,9 +176,9 @@ def detect_separation_types(
             else:
                 sep_type = "translucent-opaque"
 
-        elif p_top.startswith("LIQUID") and p_bottom.startswith("LIQUID"):
-            # both liquids, brightness different enough
-            sep_type = "liquid-liquid"
+        # elif p_top.startswith("LIQUID") and p_bottom.startswith("LIQUID"):
+        #     # both liquids, brightness different enough
+        #     sep_type = "liquid-liquid"
         else:
             # same phase or unsupported combination
             continue
